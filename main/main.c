@@ -626,12 +626,11 @@ static bool execute_path(const path_plan_t *plan)
             }
         } else {
             float reverse_delta = normalize_angle_delta(cardinal_delta + 180.0f);
-            if (fabsf(cardinal_delta) < fabsf(reverse_delta)) {
-                move_opcode = 'S';
+            if (fabsf(cardinal_delta) <= fabsf(reverse_delta)) {
+                move_opcode = 'W';
                 rotation_delta = cardinal_delta;
             } else {
-                move_opcode = 'W';
-                rotation_delta = reverse_delta;
+                move_opcode = 'S';
             }
         }
 
@@ -651,7 +650,7 @@ static bool execute_path(const path_plan_t *plan)
 
         if (fabsf(rotation_delta) > 0.1f) {
             char rotation_command[PATH_COMMAND_SIZE];
-            char rotation_opcode = rotation_delta > 0.0f ? 'Q' : 'E';
+            char rotation_opcode = rotation_delta > 0.0f ? 'E' : 'Q';
             int length = snprintf(rotation_command, sizeof(rotation_command),
                                   "%c:%.1f\n", rotation_opcode, fabsf(rotation_delta));
             if (length < 0 || length >= (int)sizeof(rotation_command) ||
