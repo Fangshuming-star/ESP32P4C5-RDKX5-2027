@@ -15,7 +15,7 @@
 #define ARM_SCREEN_DEBUG_ENABLE 1
 
 // 1=START 执行下方硬编码动作；0=执行 A* 寻路任务。
-#define AUTO_RUN_SEQUENCE_ENABLE 1
+#define AUTO_RUN_SEQUENCE_ENABLE 0
 // 硬编码动作：W/S 前进/后退，A/D 左右平移，Q/E 原地转，WA/WD/WS/WE 绕角转。
 // 每个动作的格式为“动作:数值”，动作之间用空格分隔；直线单位 mm，旋转单位度。
 #define AUTO_RUN_SEQUENCE_STR   "A:100 W:2120 Q:90 W:1070 Q:90 W:1050 Q:90 W:970 E:90 W:1070 A:100"
@@ -138,7 +138,7 @@
  * ============================================================ */
 
 // 闭环旋转/等待陀螺仪的最长等待时间（ms）；旋转超时后仅当残差达标才继续，否则报错停止。
-#define CHASSIS_ROTATE_TIMEOUT_MS 15000
+#define CHASSIS_ROTATE_TIMEOUT_MS 20000
 // 旋转超时及动作后航向检查允许保留的最大误差（度）；增大更易放行，但后续需继续纠偏。
 #define CHASSIS_ROTATE_TIMEOUT_ACCEPT_ERROR_DEG 2.0f
 // 底盘速度平滑控制周期（ms）；缩短响应更快但调速更频繁，当前有效范围为 1~10ms。
@@ -160,15 +160,15 @@
 #define YAW_SIGN                (-1.0f)
 // 原地旋转 PID 的左右方向反转开关（0/1）；原地转向与目标相反时切换。
 #define INPLACE_ROTATION_DIRECTION_REVERSED 1
-// 地图世界角度 0 度对应的陀螺仪角度（度）；地图方向整体偏移时按实测零位修正。
-#define HEADING_OFFSET_DEG      180.0f
+// 上电陀螺仪零位对应的地图世界航向（度）；必须与启停区实际发车朝向一致。
+#define HEADING_OFFSET_DEG      90.0f
 
 /* 直线差速 PID：作用于 W/S/A/D 行驶时的 1/4 与 2/3 轮组速度差。
  * 调参建议：确认方向系数正确后先调 KP；持续偏差再少量增加 KI；
  * 摆动/变化过快时再增加 KD。一次只改一个参数并记录实测结果。
  */
 // 比例增益（Hz/度）；误差越大差速越大，纠偏太弱时增大，左右摆动时减小。
-#define STRAIGHT_YAW_PID_KP 50.0f
+#define STRAIGHT_YAW_PID_KP 45.0f
 // 积分增益（Hz/(度·秒)）；用于消除持续小偏差，缓慢偏航可小幅增大，低频摆动时减小。
 #define STRAIGHT_YAW_PID_KI 0.1f
 // 微分增益（Hz/(度/秒)）；用于抑制误差快速变化，过冲/摆动时小幅增大，噪声放大时减小。
@@ -295,7 +295,7 @@ extern int g_grabT;
 extern int g_rawGap;
 // 温区 Y 坐标（mm）；按地图测量值设置，增大表示温区向地图上方移动。
 extern int g_tempY;
-// 障碍物半径（mm）；由屏幕参数接收，但当前寻路障碍检测未读取此变量，修改暂不影响避障。
+// 动态障碍物实体半径（mm）；由屏幕参数接收，寻路时与安全半径比较并采用较大值。
 extern int g_obsRad;
 // 寻路附加安全半径（mm）；增大可让路线离动态障碍更远，过大可能导致无路可走。
 extern int g_safeRad;

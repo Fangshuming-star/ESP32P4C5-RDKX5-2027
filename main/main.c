@@ -90,7 +90,7 @@ void mission_notify_grab_complete(void)
  *
  * world_deg_to_yaw(world_deg)：
  *   world_deg 是场地世界坐标角度：0°=右，90°=上，180°=左，270°=下。
- *   HEADING_OFFSET_DEG=180° 是物理零点偏移。
+ *   HEADING_OFFSET_DEG 是发车方向对应的地图世界角度。
  *   YAW_SIGN=-1 表示陀螺仪 yaw 增大方向与场地角度相反。
  *
  * 调试：
@@ -626,11 +626,12 @@ static bool execute_path(const path_plan_t *plan)
             }
         } else {
             float reverse_delta = normalize_angle_delta(cardinal_delta + 180.0f);
-            if (fabsf(cardinal_delta) <= fabsf(reverse_delta)) {
-                move_opcode = 'W';
+            if (fabsf(cardinal_delta) < fabsf(reverse_delta)) {
+                move_opcode = 'S';
                 rotation_delta = cardinal_delta;
             } else {
-                move_opcode = 'S';
+                move_opcode = 'W';
+                rotation_delta = reverse_delta;
             }
         }
 
@@ -942,6 +943,7 @@ static void main_task(void *arg)
             g_safeRad = msg.data.param.safeRad;
             g_zoneSel = msg.data.param.zoneSel;
             path_planner_set_car_size(g_carL, g_carW);
+            path_planner_set_obs_radii(g_obsRad, g_safeRad);
             break;
 
         case SCREEN_EVT_START:
