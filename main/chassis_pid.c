@@ -23,6 +23,12 @@ static esp_err_t handle_rotation_timeout(float target_yaw_deg) {
     as201_data_t latest;
     if (as201_get_latest(&latest)) {
         float error = normalize_deg180(target_yaw_deg - latest.yaw);
+#if CHASSIS_ROTATION_ERROR_ACCUMULATION_ENABLE
+        ESP_LOGW(TAG,
+                 "旋转超时，继续任务并保留目标航向残差 %.2f° (当前 %.1f°，目标 %.1f°)",
+                 error, latest.yaw, target_yaw_deg);
+        return ESP_OK;
+#else
         if (fabsf(error) <= CHASSIS_ROTATE_TIMEOUT_ACCEPT_ERROR_DEG) {
             ESP_LOGW(TAG, "旋转达到时间上限，保留 %.2f° 残差并继续后续动作", error);
             return ESP_OK;
@@ -31,6 +37,7 @@ static esp_err_t handle_rotation_timeout(float target_yaw_deg) {
         ESP_LOGE(TAG, "❌ 转向超时！当前:%.1f°, 目标:%.1f°, 误差:%.2f° (允许:%.2f°)",
                  latest.yaw, target_yaw_deg, error,
                  CHASSIS_ROTATE_TIMEOUT_ACCEPT_ERROR_DEG);
+#endif
     } else {
         ESP_LOGE(TAG, "❌ 转向超时且无法读取陀螺仪角度");
     }

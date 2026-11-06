@@ -88,17 +88,21 @@ void mission_notify_grab_complete(void)
 /* ============================================================
  * 分区二：世界角度与陀螺仪角度换算
  *
- * world_deg_to_yaw(world_deg)：
- *   world_deg 是场地世界坐标角度：0°=右，90°=上，180°=左，270°=下。
- *   HEADING_OFFSET_DEG 是发车方向对应的地图世界角度。
+ * simulator_deg_to_yaw(simulator_deg)：
+ *   simulator_deg 使用网页版角度约定；陀螺仪航向需先映射到车体世界角度。
+ *   网页与车体世界角度关于 90° 轴镜像，转换关系为 180° - simulator_deg。
+ *   HEADING_OFFSET_DEG 是发车方向对应的车体世界角度。
  *   YAW_SIGN=-1 表示陀螺仪 yaw 增大方向与场地角度相反。
  *
  * 调试：
  *   - 车头方向与预期反：改 YAW_SIGN 为 1.0
  *   - 所有角度整体偏：改 HEADING_OFFSET_DEG
  * ============================================================ */
-static float world_deg_to_yaw(float world_deg)
+static float simulator_deg_to_yaw(float simulator_deg)
 {
+    float world_deg = 180.0f - simulator_deg;
+    while (world_deg >= 360.0f) world_deg -= 360.0f;
+    while (world_deg < 0.0f) world_deg += 360.0f;
     return s_start_yaw + YAW_SIGN * (world_deg - HEADING_OFFSET_DEG);
 }
 
@@ -113,15 +117,37 @@ static float current_world_deg(void)
     return HEADING_OFFSET_DEG + YAW_SIGN * (d.yaw - s_start_yaw);
 }
 
+static float yaw_to_simulator_deg(float yaw)
+{
+    float world_deg = HEADING_OFFSET_DEG + YAW_SIGN * (yaw - s_start_yaw);
+    float angle = 180.0f - world_deg;
+    while (angle >= 360.0f) angle -= 360.0f;
+    while (angle < 0.0f) angle += 360.0f;
+    return angle;
+}
+
+static float current_simulator_deg(void)
+{
+#if CHASSIS_ROTATION_ERROR_ACCUMULATION_ENABLE
+    if (s_executor_yaw_ready) {
+        return yaw_to_simulator_deg(s_executor_target_yaw);
+    }
+#endif
+    float angle = 180.0f - current_world_deg();
+    while (angle >= 360.0f) angle -= 360.0f;
+    while (angle < 0.0f) angle += 360.0f;
+    return angle;
+}
+
 static path_point_t get_zone_start_position(void)
 {
     float zone_x = g_zoneSel == 1 ? ZONE1_X_MM : ZONE2_X_MM;
     float zone_y = g_zoneSel == 1 ? ZONE1_Y_MM : ZONE2_Y_MM;
     return (path_point_t) {
-        .x = zone_x + ZONE_SIZE_MM - g_carL / 2.0f,
+        .x = zone_x + ZONE_SIZE_MM - g_carW / 2.0f - ZONE_START_MARGIN_MM,
         .y = (g_zoneSel == 1) ?
-            zone_y + g_carW / 2.0f :
-            zone_y + ZONE_SIZE_MM - g_carW / 2.0f
+            zone_y + g_carL / 2.0f + ZONE_START_MARGIN_MM :
+            zone_y + ZONE_SIZE_MM - g_carL / 2.0f - ZONE_START_MARGIN_MM
     };
 }
 
@@ -150,11 +176,17 @@ static esp_err_t verify_heading(float target_yaw, chassis_mode_t rotation_mode)
 
     if (fabsf(error) <= CHASSIS_ROTATE_TIMEOUT_ACCEPT_ERROR_DEG) return ESP_OK;
     if (fabsf(error) > CHASSIS_HEADING_VERIFY_MAX_ERROR_DEG) {
+#if CHASSIS_ROTATION_ERROR_ACCUMULATION_ENABLE
+        ESP_LOGW(TAG, "航向残差 %.1f° 已保留到后续旋转/差速直行目标，继续任务",
+                 error);
+        return ESP_OK;
+#else
         chassis_abort();
         g_stop_requested = true;
         ESP_LOGE(TAG, "❌ 航向偏差 %.1f° 超过安全阈值 %.1f°，停止后续任务",
                  error, CHASSIS_HEADING_VERIFY_MAX_ERROR_DEG);
         return ESP_ERR_INVALID_STATE;
+#endif
     }
 
     esp_err_t ret = chassis_rotate_to_yaw_mode(rotation_mode, target_yaw, CHASSIS_ROTATE_TIMEOUT_MS);
@@ -162,6 +194,40 @@ static esp_err_t verify_heading(float target_yaw, chassis_mode_t rotation_mode)
         chassis_abort();
         g_stop_requested = true;
         ESP_LOGE(TAG, "❌ 角度检查失败/超时，停止后续任务");
+    }
+    return ret;
+}
+
+static esp_err_t rotate_to_heading(float target_yaw)
+{
+    s_executor_target_yaw = target_yaw;
+    s_executor_yaw_ready = true;
+
+    as201_data_t data;
+    if (!as201_get_latest(&data)) {
+        chassis_abort();
+        g_stop_requested = true;
+        ESP_LOGE(TAG, "❌ 无法读取陀螺仪，不能转到任务点目标航向");
+        return ESP_FAIL;
+    }
+
+    float error = target_yaw - data.yaw;
+    while (error > 180.0f) error -= 360.0f;
+    while (error < -180.0f) error += 360.0f;
+    if (fabsf(error) <= CHASSIS_ROTATE_TIMEOUT_ACCEPT_ERROR_DEG) {
+        ESP_LOGI(TAG, "任务点航向已满足: 当前 %.1f°，目标 %.1f°",
+                 data.yaw, target_yaw);
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG, "转到任务点目标航向: 当前 %.1f°，目标 %.1f°，误差 %.1f°",
+             data.yaw, target_yaw, error);
+    esp_err_t ret = chassis_rotate_to_yaw_mode(
+        CHASSIS_MODE_ROTATE_LEFT, target_yaw, CHASSIS_ROTATE_TIMEOUT_MS);
+    if (ret != ESP_OK) {
+        chassis_abort();
+        g_stop_requested = true;
+        ESP_LOGE(TAG, "❌ 无法转到任务点目标航向，停止后续任务");
     }
     return ret;
 }
@@ -224,10 +290,10 @@ static bool send_strafe_commands(char direction, float total_distance_mm)
 {
     float remaining = total_distance_mm;
 
-    while (remaining > 0.1f) {
+    while (remaining > 0.0f) {
         float step_distance = fminf(remaining, PATH_MAX_STRAFE_DIST_MM);
         char command[PATH_COMMAND_SIZE];
-        int length = snprintf(command, sizeof(command), "%c:%.1f\n",
+        int length = snprintf(command, sizeof(command), "%c:%.3f\n",
                               direction, step_distance);
         if (length < 0 || length >= (int)sizeof(command)) {
             ESP_LOGE(TAG, "平移指令格式化失败，距离 %.1fmm", step_distance);
@@ -242,7 +308,7 @@ static bool send_strafe_commands(char direction, float total_distance_mm)
 static bool send_move_command(char direction, float distance_mm)
 {
     char command[PATH_COMMAND_SIZE];
-    int length = snprintf(command, sizeof(command), "%c:%.1f\n",
+    int length = snprintf(command, sizeof(command), "%c:%.3f\n",
                           direction, distance_mm);
     if (length < 0 || length >= (int)sizeof(command)) {
         ESP_LOGE(TAG, "移动指令格式化失败，距离 %.1fmm", distance_mm);
@@ -578,7 +644,7 @@ static void hardcoded_mission_task(void *arg)
  * 输入：
  *   plan->points[0] 是当前点，从 i=1 开始走。
  *
- * 每一步由 Planner 将 W/S/A/B/Q/R 文本命令放入队列，并等待 Executor 确认。
+ * 每一步按网页版角度和坐标约定生成 W/S/A/D/Q/E 命令，再映射到 Executor。
  * 单条平移命令不超过 PATH_MAX_STRAFE_DIST_MM。
  *
  * 调试：
@@ -588,79 +654,84 @@ static void hardcoded_mission_task(void *arg)
  * ============================================================ */
 static bool execute_path(const path_plan_t *plan)
 {
+#if !CHASSIS_ROTATION_ERROR_ACCUMULATION_ENABLE
     s_executor_yaw_ready = false;
+#endif
 
     for (int i = 1; i < plan->count; i++) {
         if (g_stop_requested) return false;
 
         float dx = plan->points[i].x - s_cur_x;
         float dy = plan->points[i].y - s_cur_y;
-        float dist = sqrtf(dx * dx + dy * dy);
+        float dist = fabsf(dx) + fabsf(dy);
 
-        /* 5mm 死区：小于 5mm 认为已经在航点，避免原地抖 */
-        if (dist < 5.0f) {
-            s_cur_x = plan->points[i].x;
-            s_cur_y = plan->points[i].y;
-            continue;
-        }
+        if (dx == 0.0f && dy == 0.0f) continue;
 
-        float world_deg = (fabsf(dx) > 0.1f) ?
-            (dx > 0.0f ? 0.0f : 180.0f) :
-            (dy > 0.0f ? 90.0f : -90.0f);
-        float heading_delta = normalize_angle_delta(world_deg - current_world_deg());
-        float cardinal_delta = roundf(heading_delta / 90.0f) * 90.0f;
-        if (fabsf(heading_delta - cardinal_delta) > 5.0f) {
-            ESP_LOGE(TAG, "路径航向偏差不是直角倍数: %.1f° (航点 %d)", heading_delta, i);
-            g_stop_requested = true;
-            chassis_stop();
-            return false;
-        }
-
+        float current_angle = current_simulator_deg() * (float)M_PI / 180.0f;
         char move_opcode;
-        float rotation_delta = 0.0f;
         if (dist <= PATH_STRAFE_THRESHOLD_MM) {
-            if (fabsf(dx) > 0.1f) {
-                move_opcode = dx < 0.0f ? 'A' : 'B';
+            float local_w = -dx * cosf(current_angle) - dy * sinf(current_angle);
+            float local_d = -dx * sinf(current_angle) + dy * cosf(current_angle);
+            if (fabsf(local_w) > fabsf(local_d)) {
+                move_opcode = local_w > 0.0f ? 'W' : 'S';
             } else {
-                move_opcode = dy > 0.0f ? 'S' : 'W';
+                move_opcode = local_d > 0.0f ? 'D' : 'A';
             }
         } else {
-            float reverse_delta = normalize_angle_delta(cardinal_delta + 180.0f);
-            if (fabsf(cardinal_delta) <= fabsf(reverse_delta)) {
+            float abs_angle = 0.0f;
+            if (dx > 0.0f) abs_angle = (float)M_PI;
+            else if (dx < 0.0f) abs_angle = 0.0f;
+            else if (dy > 0.0f) abs_angle = -(float)M_PI / 2.0f;
+            else abs_angle = (float)M_PI / 2.0f;
+
+            float end_angle_s = abs_angle + (float)M_PI;
+            if (end_angle_s > (float)M_PI) end_angle_s -= 2.0f * (float)M_PI;
+            float diff_w = normalize_angle_delta(
+                (abs_angle - current_angle) * 180.0f / (float)M_PI);
+            float diff_s = normalize_angle_delta(
+                (end_angle_s - current_angle) * 180.0f / (float)M_PI);
+
+            if (fabsf(diff_w) <= fabsf(diff_s)) {
                 move_opcode = 'W';
-                rotation_delta = cardinal_delta;
+                if (diff_w != 0.0f) {
+                    char rotation_command[PATH_COMMAND_SIZE];
+                    char rotation_opcode = diff_w > 0.0f ? 'E' : 'Q';
+                    int length = snprintf(rotation_command, sizeof(rotation_command),
+                                          "%c:%.6g\n", rotation_opcode, fabsf(diff_w));
+                    if (length < 0 || length >= (int)sizeof(rotation_command) ||
+                        !send_path_command(rotation_command)) {
+                        ESP_LOGE(TAG, "❌ 转向失败！航点 %d 执行中止！", i);
+                        g_stop_requested = true;
+                        return false;
+                    }
+                }
             } else {
                 move_opcode = 'S';
+                if (diff_s != 0.0f) {
+                    char rotation_command[PATH_COMMAND_SIZE];
+                    char rotation_opcode = diff_s > 0.0f ? 'E' : 'Q';
+                    int length = snprintf(rotation_command, sizeof(rotation_command),
+                                          "%c:%.6g\n", rotation_opcode, fabsf(diff_s));
+                    if (length < 0 || length >= (int)sizeof(rotation_command) ||
+                        !send_path_command(rotation_command)) {
+                        ESP_LOGE(TAG, "❌ 转向失败！航点 %d 执行中止！", i);
+                        g_stop_requested = true;
+                        return false;
+                    }
+                }
             }
         }
 
-        /* Planner directions follow the HTML simulator; hardware W/S are reversed. */
-        if (move_opcode == 'W') {
-            move_opcode = 'S';
-        } else if (move_opcode == 'S') {
-            move_opcode = 'W';
-        }
-
+        char planner_opcode = move_opcode;
+        if (move_opcode == 'A') move_opcode = 'B';
+        else if (move_opcode == 'D') move_opcode = 'A';
 #if PATH_LOG_ENABLE
-        ESP_LOGI(TAG, " [航点 %d/%d] 目标:(%.0f,%.0f) 距离:%.0fmm 指令:%c",
+        ESP_LOGI(TAG, " [航点 %d/%d] 目标:(%.0f,%.0f) 距离:%.3fmm 航向:%.2f° 路径指令:%c 底盘指令:%c",
                  i, plan->count - 1,
                  plan->points[i].x, plan->points[i].y,
-                 dist, move_opcode);
+                 dist, current_angle * 180.0f / (float)M_PI,
+                 planner_opcode, move_opcode);
 #endif
-
-        if (fabsf(rotation_delta) > 0.1f) {
-            char rotation_command[PATH_COMMAND_SIZE];
-            char rotation_opcode = rotation_delta > 0.0f ? 'E' : 'Q';
-            int length = snprintf(rotation_command, sizeof(rotation_command),
-                                  "%c:%.1f\n", rotation_opcode, fabsf(rotation_delta));
-            if (length < 0 || length >= (int)sizeof(rotation_command) ||
-                !send_path_command(rotation_command)) {
-                ESP_LOGE(TAG, "❌ 转向失败！航点 %d 执行中止！", i);
-                g_stop_requested = true;
-                return false;
-            }
-        }
-
         bool moved = (move_opcode == 'A' || move_opcode == 'B') ?
             send_strafe_commands(move_opcode, dist) :
             send_move_command(move_opcode, dist);
@@ -704,13 +775,17 @@ static bool wait_for_action_signal(EventBits_t event_bit, bool allow_scan_skip)
     GRAB_ACTION_WAIT_MODE == ACTION_WAIT_MODE_DELAY
 static bool wait_action_delay(uint32_t wait_ms, bool allow_scan_skip)
 {
-    while (wait_ms > 0) {
+    int64_t deadline_us = esp_timer_get_time() + (int64_t)wait_ms * 1000;
+    for (;;) {
         if (g_stop_requested || (allow_scan_skip && g_skip_scan)) return !g_stop_requested;
-        uint32_t slice_ms = wait_ms > 50 ? 50 : wait_ms;
-        vTaskDelay(pdMS_TO_TICKS(slice_ms));
-        wait_ms -= slice_ms;
+        int64_t remaining_us = deadline_us - esp_timer_get_time();
+        if (remaining_us <= 0) return !g_stop_requested;
+        uint32_t remaining_ms = (uint32_t)((remaining_us + 999) / 1000);
+        uint32_t slice_ms = remaining_ms > 50 ? 50 : remaining_ms;
+        TickType_t delay_ticks = pdMS_TO_TICKS(slice_ms);
+        if (delay_ticks == 0) delay_ticks = 1;
+        vTaskDelay(delay_ticks);
     }
-    return !g_stop_requested;
 }
 #endif
 
@@ -743,7 +818,11 @@ static bool execute_action(action_type_t act)
 #else
         uint32_t wait_ms = g_grabT > 0 ? (uint32_t)g_grabT * 10U : 0U;
         ESP_LOGI(TAG, "抓取定时等待 %lu ms", (unsigned long)wait_ms);
-        return wait_action_delay(wait_ms, false);
+        bool waited = wait_action_delay(wait_ms, false);
+        if (waited) {
+            ESP_LOGI(TAG, "抓取定时等待完成，继续下一任务点");
+        }
+        return waited;
 #endif
     }
     return !g_stop_requested;
@@ -774,6 +853,7 @@ static void execute_mission(void)
 {
     calibrate_zero_yaw();
     if (g_stop_requested) return;
+    s_executor_yaw_ready = false;
     ESP_LOGI(TAG, "从启停区 %d 开始，坐标:(%.0f, %.0f)mm",
              g_zoneSel, s_cur_x, s_cur_y);
 
@@ -815,9 +895,10 @@ static void execute_mission(void)
         }
         screen_send_str(cbuf);
 
-        ESP_LOGI(TAG, "▶ 前往任务点 %s ...", target->name);
+        ESP_LOGI(TAG, "▶ 前往任务点 %s (%.0f, %.0f), 目标航向 %.0f° ...",
+                 target->name, target->x_mm, target->y_mm, target->heading_deg);
 
-        float cur_rad = current_world_deg() * (float)M_PI / 180.0f;
+        float cur_rad = current_simulator_deg() * (float)M_PI / 180.0f;
         path_plan_t plan;
         if (!path_planner_find(s_cur_x, s_cur_y, target->x_mm, target->y_mm, cur_rad, &plan)) {
             screen_send_str("C:No Path");
@@ -836,8 +917,8 @@ static void execute_mission(void)
         vTaskDelay(pdMS_TO_TICKS(150));
 
         /* 到达后转到任务点要求的世界朝向 */
-        float target_yaw = world_deg_to_yaw(target->heading_deg);
-        if (verify_heading(target_yaw, CHASSIS_MODE_ROTATE_LEFT) != ESP_OK) {
+        float target_yaw = simulator_deg_to_yaw(target->heading_deg);
+        if (rotate_to_heading(target_yaw) != ESP_OK) {
             break;
         }
         vTaskDelay(pdMS_TO_TICKS(150));
@@ -864,7 +945,7 @@ static void execute_mission(void)
 
         path_plan_t plan;
         if (path_planner_find(s_cur_x, s_cur_y, rx, ry,
-                              current_world_deg() * (float)M_PI / 180.0f, &plan)) {
+                              current_simulator_deg() * (float)M_PI / 180.0f, &plan)) {
             if (!execute_path(&plan)) {
                 screen_send_str("C:Path Fail");
             } else {
@@ -875,7 +956,7 @@ static void execute_mission(void)
             screen_send_str("C:No Path");
         }
         if (!g_stop_requested) {
-            verify_heading(world_deg_to_yaw(RETURN_HEADING_DEG), CHASSIS_MODE_ROTATE_LEFT);
+            rotate_to_heading(simulator_deg_to_yaw(RETURN_HEADING_DEG));
         }
     }
 
@@ -922,8 +1003,7 @@ static void main_task(void *arg)
             for (int p = 0; p < 5; p++) {
                 if (msg.data.points.vals[p * 3] == 1) {
                     float mm_x = (float)msg.data.points.vals[p * 3 + 1] * SCREEN_PX_TO_MM;
-                    /* 屏幕 Y 向下，地图 Y 向上，所以 272 - y */
-                    float mm_y = (272.0f - (float)msg.data.points.vals[p * 3 + 2]) * SCREEN_PX_TO_MM;
+                    float mm_y = (float)msg.data.points.vals[p * 3 + 2] * SCREEN_PX_TO_MM;
                     path_planner_add_dynamic_obstacle(mm_x, mm_y);
                 }
             }

@@ -15,10 +15,10 @@
 #define ARM_SCREEN_DEBUG_ENABLE 1
 
 // 1=START 执行下方硬编码动作；0=执行 A* 寻路任务。
-#define AUTO_RUN_SEQUENCE_ENABLE 0
+#define AUTO_RUN_SEQUENCE_ENABLE 1
 // 硬编码动作：W/S 前进/后退，A/D 左右平移，Q/E 原地转，WA/WD/WS/WE 绕角转。
 // 每个动作的格式为“动作:数值”，动作之间用空格分隔；直线单位 mm，旋转单位度。
-#define AUTO_RUN_SEQUENCE_STR   "A:100 W:2120 Q:90 W:1070 Q:90 W:1050 Q:90 W:970 E:90 W:1070 A:100"
+#define AUTO_RUN_SEQUENCE_STR   "W:2120"
 
 // 任务等待方式：0=等待固定时间；1=等待对应任务发出完成信号。
 #define ACTION_WAIT_MODE_DELAY          1
@@ -105,7 +105,7 @@
 // 底盘驱动器细分数；必须与驱动器拨码/配置一致，不能按距离误差随意更改。
 #define MOTOR_MICROSTEPS        2
 // 底盘距离标定系数；标定路程偏短时增大，偏长时减小，建议依据实测比例修正。
-#define CHASSIS_DISTANCE_CALIBRATION_FACTOR 1.9184f
+#define CHASSIS_DISTANCE_CALIBRATION_FACTOR 1.9274f
 // 车中心到有效旋转轮组的距离（mm）；影响原地旋转对应的轮子行程，按实测几何尺寸调整。
 #define CENTER_TO_WHEEL_MM      149.164f
 
@@ -137,10 +137,16 @@
  * 周期受 FreeRTOS tick 限制；修改周期时需同时观察控制平顺性和 CPU 负载。
  * ============================================================ */
 
-// 闭环旋转/等待陀螺仪的最长等待时间（ms）；旋转超时后仅当残差达标才继续，否则报错停止。
+// 闭环旋转/等待陀螺仪的最长等待时间（ms）；超时策略由下方误差累积开关控制。
 #define CHASSIS_ROTATE_TIMEOUT_MS 20000
-// 旋转超时及动作后航向检查允许保留的最大误差（度）；增大更易放行，但后续需继续纠偏。
+// 关闭误差累积时，旋转超时可接受的最大剩余误差（度）。
 #define CHASSIS_ROTATE_TIMEOUT_ACCEPT_ERROR_DEG 2.0f
+// 编译时手动设置：1=旋转超时后继续并累计目标航向残差；后续旋转或差速行驶纠偏；0=超差停止。
+#define CHASSIS_ROTATION_ERROR_ACCUMULATION_ENABLE 1
+#if CHASSIS_ROTATION_ERROR_ACCUMULATION_ENABLE != 0 && \
+    CHASSIS_ROTATION_ERROR_ACCUMULATION_ENABLE != 1
+#error "CHASSIS_ROTATION_ERROR_ACCUMULATION_ENABLE must be 0 or 1"
+#endif
 // 底盘速度平滑控制周期（ms）；缩短响应更快但调速更频繁，当前有效范围为 1~10ms。
 #define CHASSIS_SPEED_CONTROL_PERIOD_MS 10
 // 每个速度控制周期的加速步进（Hz）；起步打滑/冲击时减小，起步过慢时增大。
@@ -239,26 +245,31 @@
 /* ============================================================
  * 8. 地图、寻路与场地尺寸
  * 地图坐标单位为 mm；地图尺寸、启停区和任务点坐标必须使用同一坐标系。
+ * 坐标方向与网页版一致：X 向右，Y 向下。
  * ============================================================ */
 
 // 正方形地图边长（mm）；必须与场地实际尺寸及屏幕坐标映射一致。
 #define MAP_SIZE_MM             2400.0f
 // A* 网格边长（mm）；减小路线更精细但计算量增加，增大寻路更快但路线更粗。
-#define GRID_MM                 40.0f
+#define GRID_MM                 20.0f
 // 路径段短于等于此距离时优先使用全向平移；更长时选择前进/倒车并仅按直角转向。
 #define PATH_STRAFE_THRESHOLD_MM 150.0f
 // 地图原料区圆形障碍半径（mm）；按场地实际尺寸设置，增大可留出更多避让空间。
 #define RAW_MAT_RADIUS_MM       150.0f
 // 启停区边长（mm）；按场地标记尺寸设置，影响启停区中心坐标计算。
 #define ZONE_SIZE_MM            300.0f
-// 1 号启停区左下角 X 坐标（mm）；用于场地范围定义。
+// 1 号启停区左侧 X 坐标（mm）；用于场地范围定义。
 #define ZONE1_X_MM              2100.0f
-// 1 号启停区左下角 Y 坐标（mm）；用于场地范围定义。
+// 1 号启停区上侧 Y 坐标（mm）；用于场地范围定义。
 #define ZONE1_Y_MM              0.0f
-// 2 号启停区左下角 X 坐标（mm）；用于场地范围定义。
+// 2 号启停区左侧 X 坐标（mm）；用于场地范围定义。
 #define ZONE2_X_MM              2100.0f
-// 2 号启停区左下角 Y 坐标（mm）；用于场地范围定义。
+// 2 号启停区上侧 Y 坐标（mm）；用于场地范围定义。
 #define ZONE2_Y_MM              2100.0f
+// 启停区发车点距场地边缘的留量（mm）；与网页版起点公式一致。
+#define ZONE_START_MARGIN_MM    2.0f
+// 原料区抓取中心距车体参考点的机构半径（mm）；与网页版 grabRadius 一致。
+#define RAW_GRAB_RADIUS_MM      50.0f
 // 屏幕像素到地图毫米的换算比例；屏幕绘图区尺寸变化时需同步修正分母 272。
 #define SCREEN_PX_TO_MM         (MAP_SIZE_MM / 272.0f)
 
@@ -293,7 +304,7 @@ extern int g_spdRot;
 extern int g_grabT;
 // 原料区间隙（mm），参与原料区位置推算；按场地实测间隙调整。
 extern int g_rawGap;
-// 温区 Y 坐标（mm）；按地图测量值设置，增大表示温区向地图上方移动。
+// 温区 Y 坐标（mm）；按地图测量值设置，增大表示沿网页版 Y 轴向下移动。
 extern int g_tempY;
 // 动态障碍物实体半径（mm）；由屏幕参数接收，寻路时与安全半径比较并采用较大值。
 extern int g_obsRad;
@@ -321,14 +332,14 @@ typedef enum {
 typedef enum { ACT_NONE = 0, ACT_SCAN, ACT_GRAB } action_type_t;
 
 typedef struct {
-    float x_mm, y_mm;       // 地图坐标（mm）：X 向右、Y 向上。
-    float heading_deg;      // 到达任务点时的世界航向（度）。
+    float x_mm, y_mm;       // 地图坐标（mm）：X 向右、Y 向下，与网页版一致。
+    float heading_deg;      // 到达任务点时的网页版航向（度）。
     action_type_t action;   // 到达后执行的动作类型。
     const char *name;       // 日志/显示使用的任务点名称。
 } task_point_t;
 
-// 原料点 Y 坐标推算：原料区间隙 + 半车宽 + 20mm 预留；预留量增大可离边界更远。
-#define TP_RAW_Y  (g_rawGap + g_carW / 2.0f + 20.0f)
+// 原料点 Y 坐标：原料区间隙 + 抓取机构半径 + 半车宽，与网页版一致。
+#define TP_RAW_Y  (g_rawGap + RAW_GRAB_RADIUS_MM + g_carW / 2.0f)
 
 // 获取各任务点坐标、目标航向与动作定义。
 void config_get_task_points(task_point_t tp[TP_COUNT]);
@@ -337,5 +348,5 @@ void config_get_mission_sequence(task_point_id_t seq[12]);
 
 // 1=任务结束后返回所选启停区，0=停在任务终点。
 #define RETURN_TO_START         1
-// 返回启停区后的目标世界航向（度）；默认使用地图航向零点。
+// 返回启停区后的网页版目标航向（度）；默认使用发车时的 90° 航向。
 #define RETURN_HEADING_DEG      HEADING_OFFSET_DEG

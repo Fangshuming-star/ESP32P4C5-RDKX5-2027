@@ -37,22 +37,26 @@ typedef struct {
     uint32_t f;
     uint32_t heap_pos;
     uint8_t state;
+    uint8_t direction;
 } astar_node_t;
 static astar_node_t *s_nodes = NULL;
 static uint32_t *s_open_heap = NULL;
+static uint32_t *s_raw_path = NULL;
 
 /* ==================== 三、初始化与障碍物管理区 ==================== */
 void path_planner_init(void) {
     if (s_grid == NULL) s_grid = heap_caps_malloc(NODES, MALLOC_CAP_8BIT);
     if (s_nodes == NULL) s_nodes = heap_caps_malloc(NODES * sizeof(astar_node_t), MALLOC_CAP_8BIT);
     if (s_open_heap == NULL) s_open_heap = heap_caps_malloc(NODES * sizeof(uint32_t), MALLOC_CAP_8BIT);
+    if (s_raw_path == NULL) s_raw_path = heap_caps_malloc(NODES * sizeof(uint32_t), MALLOC_CAP_8BIT);
     s_dyn_count = 0;
     s_car_length_mm = (float)g_carL;
     s_car_width_mm = (float)g_carW;
     s_dynamic_radius_mm = (float)((g_safeRad > g_obsRad) ? g_safeRad : g_obsRad);
-    if (!s_grid || !s_nodes || !s_open_heap) {
-        ESP_LOGE(TAG, "路径规划内存分配失败 (grid=%p nodes=%p heap=%p)",
-                 (void *)s_grid, (void *)s_nodes, (void *)s_open_heap);
+    if (!s_grid || !s_nodes || !s_open_heap || !s_raw_path) {
+        ESP_LOGE(TAG, "路径规划内存分配失败 (grid=%p nodes=%p heap=%p path=%p)",
+                 (void *)s_grid, (void *)s_nodes, (void *)s_open_heap,
+                 (void *)s_raw_path);
         return;
     }
     ESP_LOGI(TAG, "路径规划器初始化完成");
@@ -84,7 +88,7 @@ int path_planner_get_dynamic_obstacle_count(void) { return s_dyn_count; }
 
 /* ==================== 四、地图栅格化区 ==================== */
 static void car_aabb_half_extents(float angle_rad, float *half_x, float *half_y) {
-    if (fabsf(cosf(angle_rad)) > 0.5f) {
+    if (fabsf(sinf(angle_rad)) < 0.5f) {
         *half_x = s_car_length_mm / 2.0f;
         *half_y = s_car_width_mm / 2.0f;
     } else {
@@ -241,6 +245,7 @@ static bool astar_search(int sx, int sy, int gx, int gy, path_plan_t *out) {
     start->g = 0;
     start->f = heuristic(sx, sy, gx, gy);
     start->state = NODE_OPEN;
+    start->direction = UINT8_MAX;
     start->heap_pos = heap_size;
     s_open_heap[heap_size++] = (uint32_t)start_idx;
 
@@ -251,24 +256,34 @@ static bool astar_search(int sx, int sy, int gx, int gy, path_plan_t *out) {
         current->state = NODE_CLOSED;
         if (current_idx == goal_idx) {
             int32_t node_idx = goal_idx;
+            uint32_t raw_count = 0;
+            while (node_idx >= 0 && raw_count < NODES) {
+                s_raw_path[raw_count++] = (uint32_t)node_idx;
+                node_idx = s_nodes[node_idx].parent;
+            }
+            if (node_idx >= 0 || raw_count == 0) return false;
+
             out->count = 0;
-            while (node_idx >= 0 && out->count < PATH_MAX_WAYPOINTS) {
-                int x = node_idx % COLS;
-                int y = node_idx / COLS;
+            uint8_t last_direction = UINT8_MAX;
+            for (uint32_t i = raw_count; i-- > 0;) {
+                uint32_t cell_idx = s_raw_path[i];
+                int x = cell_idx % COLS;
+                int y = cell_idx / COLS;
+                if (i < raw_count - 1) {
+                    uint8_t direction = s_nodes[cell_idx].direction;
+                    if (out->count > 1 && direction == last_direction) {
+                        out->count--;
+                    }
+                    last_direction = direction;
+                }
+                if (out->count >= PATH_MAX_WAYPOINTS) {
+                    out->count = 0;
+                    return false;
+                }
                 out->points[out->count++] = (path_point_t) {
                     x * GRID_MM + GRID_MM / 2.0f,
                     y * GRID_MM + GRID_MM / 2.0f
                 };
-                node_idx = s_nodes[node_idx].parent;
-            }
-            if (node_idx >= 0) {
-                out->count = 0;
-                return false;
-            }
-            for (int i = 0; i < out->count / 2; i++) {
-                path_point_t tmp = out->points[i];
-                out->points[i] = out->points[out->count - 1 - i];
-                out->points[out->count - 1 - i] = tmp;
             }
             return true;
         }
@@ -283,11 +298,14 @@ static bool astar_search(int sx, int sy, int gx, int gy, path_plan_t *out) {
             astar_node_t *next = &s_nodes[next_idx];
             if (s_grid[next_idx] || next->state == NODE_CLOSED) continue;
 
-            uint32_t tentative_g = current->g + 1;
+            uint32_t turn_penalty =
+                current->direction != UINT8_MAX && current->direction != d ? 2U : 0U;
+            uint32_t tentative_g = current->g + 1U + turn_penalty;
             if (next->state == NODE_UNSEEN || tentative_g < next->g) {
                 next->parent = current_idx;
                 next->g = tentative_g;
                 next->f = tentative_g + heuristic(nx, ny, gx, gy);
+                next->direction = (uint8_t)d;
                 if (next->state == NODE_UNSEEN) {
                     next->state = NODE_OPEN;
                     next->heap_pos = heap_size;
@@ -301,22 +319,6 @@ static bool astar_search(int sx, int sy, int gx, int gy, path_plan_t *out) {
 }
 
 /* ==================== 七、路径后处理区 ==================== */
-static void simplify_path(path_plan_t *path) {
-    if (path->count <= 2) return;
-    static path_plan_t tmp; tmp.count = 0; tmp.points[tmp.count++] = path->points[0];
-    for (int i = 1; i < path->count - 1; i++) {
-        path_point_t prev = tmp.points[tmp.count - 1], cur = path->points[i], next = path->points[i + 1];
-        bool same_x1 = fabsf(prev.x - cur.x) < GRID_MM / 2;
-        bool same_x2 = fabsf(cur.x - next.x) < GRID_MM / 2;
-        bool same_y1 = fabsf(prev.y - cur.y) < GRID_MM / 2;
-        bool same_y2 = fabsf(cur.y - next.y) < GRID_MM / 2;
-        if ((same_x1 && same_x2) || (same_y1 && same_y2)) continue;
-        tmp.points[tmp.count++] = cur;
-    }
-    tmp.points[tmp.count++] = path->points[path->count - 1];
-    *path = tmp;
-}
-
 static bool append_path_point(path_plan_t *path, path_point_t point);
 static bool axis_segment_is_free(path_point_t start, path_point_t end);
 
@@ -357,8 +359,7 @@ static bool optimize_path(path_plan_t *path) {
 static bool append_path_point(path_plan_t *path, path_point_t point) {
     if (path->count > 0) {
         path_point_t last = path->points[path->count - 1];
-        if (fabsf(last.x - point.x) < 0.1f &&
-            fabsf(last.y - point.y) < 0.1f) {
+        if (last.x == point.x && last.y == point.y) {
             return true;
         }
     }
@@ -406,8 +407,7 @@ static bool try_direct_orthogonal_path(float start_x, float start_y,
         { start_x, goal_y }
     };
 
-    if (fabsf(start_x - goal_x) < 0.1f ||
-        fabsf(start_y - goal_y) < 0.1f) {
+    if (start_x == goal_x || start_y == goal_y) {
         if (!axis_segment_is_free(start, goal)) return false;
         path->count = 0;
         return append_path_point(path, start) &&
@@ -444,17 +444,30 @@ static bool align_path_endpoints(path_plan_t *path, float start_x, float start_y
     if (!append_path_point(path, start)) return false;
 
     if (original_count == 1) {
-        path_point_t corner = { goal_x, start_y };
-        return append_path_point(path, corner) &&
-               append_path_point(path, goal);
+        path_point_t corners[2] = {
+            { goal_x, start_y },
+            { start_x, goal_y }
+        };
+        for (int i = 0; i < 2; i++) {
+            if (axis_segment_is_free(start, corners[i]) &&
+                axis_segment_is_free(corners[i], goal)) {
+                return append_path_point(path, corners[i]) &&
+                       append_path_point(path, goal);
+            }
+        }
+        return false;
     }
 
     path_point_t grid_start = original[0];
     path_point_t first_next = original[1];
     path_point_t start_corner = {
-        fabsf(first_next.x - grid_start.x) > 0.1f ? grid_start.x : start_x,
-        fabsf(first_next.x - grid_start.x) > 0.1f ? start_y : grid_start.y
+        first_next.x != grid_start.x ? grid_start.x : start_x,
+        first_next.x != grid_start.x ? start_y : grid_start.y
     };
+    if (!axis_segment_is_free(start, start_corner) ||
+        !axis_segment_is_free(start_corner, grid_start)) {
+        return false;
+    }
     if (!append_path_point(path, start_corner) ||
         !append_path_point(path, grid_start)) {
         return false;
@@ -466,9 +479,13 @@ static bool align_path_endpoints(path_plan_t *path, float start_x, float start_y
     path_point_t grid_goal = original[original_count - 1];
     path_point_t previous = original[original_count - 2];
     path_point_t goal_corner = {
-        fabsf(grid_goal.x - previous.x) > 0.1f ? grid_goal.x : goal_x,
-        fabsf(grid_goal.x - previous.x) > 0.1f ? goal_y : grid_goal.y
+        grid_goal.x != previous.x ? grid_goal.x : goal_x,
+        grid_goal.x != previous.x ? goal_y : grid_goal.y
     };
+    if (!axis_segment_is_free(grid_goal, goal_corner) ||
+        !axis_segment_is_free(goal_corner, goal)) {
+        return false;
+    }
     return append_path_point(path, goal_corner) &&
            append_path_point(path, goal);
 }
@@ -496,7 +513,7 @@ static bool find_nearest_free(int *x, int *y) {
 bool path_planner_find(float start_x_mm, float start_y_mm, float goal_x_mm,  float goal_y_mm, float start_angle_rad, path_plan_t *out) {
     if (!out) return false;
     out->count = 0;
-    if (!s_grid || !s_nodes || !s_open_heap) {
+    if (!s_grid || !s_nodes || !s_open_heap || !s_raw_path) {
         ESP_LOGE(TAG, "路径规划器未成功初始化");
         return false;
     }
@@ -527,7 +544,6 @@ bool path_planner_find(float start_x_mm, float start_y_mm, float goal_x_mm,  flo
     if (!find_nearest_free(&sx, &sy)) return false;
     if (!find_nearest_free(&gx, &gy)) return false;
     if (!astar_search(sx, sy, gx, gy, out)) return false;
-    simplify_path(out);
     if (!optimize_path(out)) {
         out->count = 0;
         return false;
@@ -536,5 +552,11 @@ bool path_planner_find(float start_x_mm, float start_y_mm, float goal_x_mm,  flo
         out->count = 0;
         return false;
     }
+#if PATH_LOG_ENABLE
+    ESP_LOGI(TAG, "A* 路径生成 %d 个航点", out->count);
+    for (int i = 0; i < out->count; i++) {
+        ESP_LOGI(TAG, "  航点 %d: (%.0f, %.0f)", i, out->points[i].x, out->points[i].y);
+    }
+#endif
     return true;
 }
