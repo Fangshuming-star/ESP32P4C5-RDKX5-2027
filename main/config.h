@@ -140,7 +140,7 @@
 // 闭环旋转/等待陀螺仪的最长等待时间（ms）；超时策略由下方误差累积开关控制。
 #define CHASSIS_ROTATE_TIMEOUT_MS 20000
 // 关闭误差累积时，旋转超时可接受的最大剩余误差（度）。
-#define CHASSIS_ROTATE_TIMEOUT_ACCEPT_ERROR_DEG 2.0f
+#define CHASSIS_ROTATE_TIMEOUT_ACCEPT_ERROR_DEG 0.50f
 // 编译时手动设置：1=旋转超时后继续并累计目标航向残差；后续旋转或差速行驶纠偏；0=超差停止。
 #define CHASSIS_ROTATION_ERROR_ACCUMULATION_ENABLE 1
 #if CHASSIS_ROTATION_ERROR_ACCUMULATION_ENABLE != 0 && \
@@ -176,9 +176,9 @@
 // 比例增益（Hz/度）；误差越大差速越大，纠偏太弱时增大，左右摆动时减小。
 #define STRAIGHT_YAW_PID_KP 45.0f
 // 积分增益（Hz/(度·秒)）；用于消除持续小偏差，缓慢偏航可小幅增大，低频摆动时减小。
-#define STRAIGHT_YAW_PID_KI 0.1f
+#define STRAIGHT_YAW_PID_KI 0.01f
 // 微分增益（Hz/(度/秒)）；用于抑制误差快速变化，过冲/摆动时小幅增大，噪声放大时减小。
-#define STRAIGHT_YAW_PID_KD 10.0f
+#define STRAIGHT_YAW_PID_KD 5.0f
 // 积分状态限幅（度·秒）；增大可积累更多持续纠偏量，但更易产生积分过冲。
 #define STRAIGHT_YAW_PID_INTEGRAL_MAX 20.0f
 // PID 单侧差速输出上限（Hz）；纠偏输出受限时可适当增大，同时检查轮速上限和稳定性。
@@ -188,7 +188,7 @@
 // 直线纠偏误差死区（度）；小于此值不输出差速，陀螺仪噪声导致抖动时可增大。
 #define STRAIGHT_YAW_CORRECTION_DEAD_ZONE_DEG 0.05f
 // 单侧差速相对基准轮速的最大比例；纠偏不足可增大，轮组差速过大或偏航恶化时减小。
-#define STRAIGHT_YAW_MAX_ADJUST_RATIO 0.5f
+#define STRAIGHT_YAW_MAX_ADJUST_RATIO 0.25f
 // 直线差速总方向系数（+1/-1）；前进时越纠越偏就切换符号，先低速验证。
 #define STRAIGHT_YAW_CORRECTION_SIGN 1.0f
 // 后退差速方向系数（+1/-1）；仅后退方向纠偏反常时切换，前进不受此参数影响。
@@ -196,7 +196,7 @@
 // 直线航向采样/差速更新周期（ms）；当前有效范围为 1~10ms，降低周期会增加更新频率。
 #define STRAIGHT_YAW_CORRECTION_PERIOD_MS 10
 // 每周期差速输出变化上限（Hz）；差速变化过猛时减小，纠偏响应过慢时谨慎增大。
-#define STRAIGHT_YAW_SPEED_STEP_HZ 30
+#define STRAIGHT_YAW_SPEED_STEP_HZ 20
 #if STRAIGHT_YAW_CORRECTION_PERIOD_MS < 1 || STRAIGHT_YAW_CORRECTION_PERIOD_MS > 10
 #error "STRAIGHT_YAW_CORRECTION_PERIOD_MS must be between 1 and 10 ms"
 #endif
@@ -211,7 +211,7 @@
 // 旋转积分增益；用于补偿持续偏差，通常保持 0，确有稳定偏差再小幅增加。
 #define PID_KI_DEFAULT          0.0f
 // 旋转微分增益；提前减速/抑制过冲，过冲时可增大，输出抖动或响应迟钝时减小。
-#define PID_KD_DEFAULT          5.0f
+#define PID_KD_DEFAULT          10.0f
 // 旋转到达死区（度）；增大可减少目标附近反复追转但降低精度，过小可能难以稳定到达。
 #define PID_DEAD_ZONE_DEG       0.30f
 // 原地旋转 PID 更新周期（ms）；当前有效范围为 1~10ms，需不小于系统 tick 分辨率。
@@ -220,11 +220,11 @@
 #error "PID_CTRL_PERIOD_MS must be between 1 and 10 ms"
 #endif
 // 动作后检查的最大允许航向误差（度）；超过则视为异常停止，增大将放宽安全检查。
-#define CHASSIS_HEADING_VERIFY_MAX_ERROR_DEG 10.0f
+#define CHASSIS_HEADING_VERIFY_MAX_ERROR_DEG 15.0f
 // 旋转速度参考系数（Hz/度）；当前闭环 PID 路径未使用，修改不会改变闭环旋转速度。
 #define PID_ROT_SPEED_HZ_PER_DEG 2.0f
 // 绕角旋转速度上限参考值（Hz）；当前闭环 PID 路径未使用，修改不会改变闭环旋转速度。
-#define PID_ROT_MAX_HZ          500.0f
+#define PID_ROT_MAX_HZ          800.0f
 // 闭环旋转最低速度（Hz）；与电机驱动支持的最低非零步进频率一致。
 #define PID_ROT_MIN_HZ          1.0f
 // 原地旋转 PID 积分限幅；增大允许更大的积分补偿，但可能加剧过冲；KI 为 0 时不起作用。
