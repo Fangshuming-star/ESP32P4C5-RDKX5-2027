@@ -78,11 +78,27 @@ void path_planner_set_obs_radii(float obs_radius_mm, float safe_radius_mm) {
         return;
     }
     s_dynamic_radius_mm = fmaxf(obs_radius_mm, safe_radius_mm);
+#if PATH_LOG_ENABLE
+    ESP_LOGI(TAG, "动态障碍膨胀半径设为 %.1f mm", s_dynamic_radius_mm);
+#endif
 }
 void path_planner_clear_dynamic_obstacles(void) { s_dyn_count = 0; }
 void path_planner_add_dynamic_obstacle(float x_mm, float y_mm) {
-    if (s_dyn_count >= PATH_MAX_DYNAMIC_OBS) return;
+    if (!isfinite(x_mm) || !isfinite(y_mm) ||
+        x_mm < 0.0f || x_mm > MAP_SIZE_MM ||
+        y_mm < 0.0f || y_mm > MAP_SIZE_MM) {
+        ESP_LOGW(TAG, "忽略越界动态障碍点: (%.1f, %.1f) mm", x_mm, y_mm);
+        return;
+    }
+    if (s_dyn_count >= PATH_MAX_DYNAMIC_OBS) {
+        ESP_LOGW(TAG, "动态障碍物数量达到上限 %d", PATH_MAX_DYNAMIC_OBS);
+        return;
+    }
     s_dyn_obs[s_dyn_count++] = (path_point_t){ x_mm, y_mm };
+#if PATH_LOG_ENABLE
+    ESP_LOGI(TAG, "记录动态障碍点%d: (%.1f, %.1f) mm",
+             s_dyn_count, x_mm, y_mm);
+#endif
 }
 int path_planner_get_dynamic_obstacle_count(void) { return s_dyn_count; }
 
@@ -177,6 +193,10 @@ static void build_grid(float angle_rad) {
         mark_circle(s_dyn_obs[i].x, s_dyn_obs[i].y,
                     s_dynamic_radius_mm, half_x, half_y);
     }
+#if PATH_LOG_ENABLE
+    ESP_LOGI(TAG, "重建A*栅格：应用%d个动态障碍物，膨胀半径%.1f mm",
+             s_dyn_count, s_dynamic_radius_mm);
+#endif
 }
 static int coord_to_idx(int x, int y) { return y * COLS + x; }
 
@@ -524,6 +544,10 @@ bool path_planner_find(float start_x_mm, float start_y_mm, float goal_x_mm,  flo
         return false;
     }
     build_grid(start_angle_rad);
+#if PATH_LOG_ENABLE
+    ESP_LOGI(TAG, "规划请求: (%.1f, %.1f) -> (%.1f, %.1f)，动态障碍=%d",
+             start_x_mm, start_y_mm, goal_x_mm, goal_y_mm, s_dyn_count);
+#endif
     int sx = (int)floorf(start_x_mm / GRID_MM), sy = (int)floorf(start_y_mm / GRID_MM);
     int gx = (int)floorf(goal_x_mm / GRID_MM), gy = (int)floorf(goal_y_mm / GRID_MM);
     
@@ -538,8 +562,14 @@ bool path_planner_find(float start_x_mm, float start_y_mm, float goal_x_mm,  flo
 
     if (try_direct_orthogonal_path(start_x_mm, start_y_mm,
                                    goal_x_mm, goal_y_mm, out)) {
+#if PATH_LOG_ENABLE
+        ESP_LOGI(TAG, "直角直达路径通过栅格碰撞检查");
+#endif
         return true;
     }
+#if PATH_LOG_ENABLE
+    ESP_LOGI(TAG, "直达路径被栅格阻挡，转入A*搜索");
+#endif
     
     if (!find_nearest_free(&sx, &sy)) return false;
     if (!find_nearest_free(&gx, &gy)) return false;

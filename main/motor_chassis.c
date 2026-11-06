@@ -85,9 +85,9 @@ static uint64_t s_next_pulse_us[CHASSIS_MOTOR_NUM];
 static uint8_t s_pulse_level[CHASSIS_MOTOR_NUM];
 
 static esp_timer_handle_t s_pulse_timer = NULL;
-static esp_timer_handle_t s_stop_timer = NULL;
 static SemaphoreHandle_t s_move_done_sem = NULL;
 static volatile bool s_distance_tracking;
+static volatile bool s_distance_cancelled;
 static volatile uint32_t s_distance_target_steps;
 static volatile uint32_t s_distance_steps[CHASSIS_MOTOR_NUM];
 static volatile uint8_t s_distance_motor_mask;
@@ -249,11 +249,6 @@ static void speed_control_task(void *arg) {
     }
 }
 
-static void stop_timer_cb(void *arg) {
-    chassis_stop();
-    if (s_move_done_sem) xSemaphoreGive(s_move_done_sem);
-}
-
 esp_err_t chassis_init(void) {
     (void)TAG; // 消除未使用警告
     gpio_config_t en_cfg = { .pin_bit_mask = (1ULL << CHASSIS_PIN_EN), .mode = GPIO_MODE_OUTPUT };
@@ -278,9 +273,6 @@ esp_err_t chassis_init(void) {
     esp_timer_create(&p_args, &s_pulse_timer);
     esp_timer_start_periodic(s_pulse_timer, 50); 
 
-    esp_timer_create_args_t s_args = { .callback = &stop_timer_cb, .name = "chassis_stop" };
-    esp_timer_create(&s_args, &s_stop_timer);
-    
     s_move_done_sem = xSemaphoreCreateBinary();
     xTaskCreate(speed_control_task, "chassis_speed", 2048, NULL, 4, NULL);
     chassis_enable(1);
@@ -290,12 +282,18 @@ esp_err_t chassis_init(void) {
 esp_err_t chassis_enable(bool enable) { return gpio_set_level(CHASSIS_PIN_EN, enable ? CHASSIS_EN_ACTIVE_LEVEL : !CHASSIS_EN_ACTIVE_LEVEL); }
 
 esp_err_t chassis_stop(void) {
-    if (s_stop_timer && esp_timer_is_active(s_stop_timer)) esp_timer_stop(s_stop_timer);
+    if (s_distance_tracking) {
+        s_distance_cancelled = true;
+        s_distance_tracking = false;
+        s_distance_motor_mask = 0;
+        if (s_move_done_sem) xSemaphoreGive(s_move_done_sem);
+    }
     for (int i = 0; i < CHASSIS_MOTOR_NUM; i++) s_target_speed[i] = 0; 
     return ESP_OK;
 }
 
 esp_err_t chassis_abort(void) { 
+    if (s_distance_tracking) s_distance_cancelled = true;
     s_distance_tracking = false;
     s_distance_motor_mask = 0;
     for (int i = 0; i < CHASSIS_MOTOR_NUM; i++) {
@@ -303,7 +301,6 @@ esp_err_t chassis_abort(void) {
         s_distance_final_pulse[i] = false;
         gpio_set_level(s_step_gpio[i], 0);
     }
-    if (s_stop_timer && esp_timer_is_active(s_stop_timer)) esp_timer_stop(s_stop_timer);
     if (s_move_done_sem) xSemaphoreGive(s_move_done_sem); 
     return ESP_OK; 
 }
@@ -469,6 +466,7 @@ static esp_err_t start_distance_tracking(chassis_mode_t mode, float distance_mm,
 
     chassis_abort();
     xSemaphoreTake(s_move_done_sem, 0);
+    s_distance_cancelled = false;
 
     s_distance_target_steps = steps;
     s_distance_motor_mask = 0;
@@ -517,17 +515,10 @@ esp_err_t chassis_move(chassis_mode_t mode) {
 }
 
 esp_err_t chassis_move_distance(chassis_mode_t mode, float distance_mm) {
-    uint32_t speed_hz; uint8_t en[CHASSIS_MOTOR_NUM]; uint8_t dir[CHASSIS_MOTOR_NUM];
-    if (get_mode_params(mode, &speed_hz, en, dir) != ESP_OK) return ESP_ERR_INVALID_ARG;
     if (distance_mm <= 0.1f) return ESP_OK;
+    uint32_t cruise_hz;
     uint32_t target_steps;
-    esp_err_t ret = distance_to_steps(distance_mm, &target_steps);
-    if (ret != ESP_OK) return ret;
-    if (speed_hz == 0) return ESP_ERR_INVALID_STATE;
-    uint64_t time_us = (uint64_t)(((uint64_t)target_steps * 1000000ULL) / speed_hz);
-    apply_and_run(speed_hz, en, dir);
-    esp_timer_start_once(s_stop_timer, time_us);
-    return ESP_OK;
+    return start_distance_tracking(mode, distance_mm, &cruise_hz, &target_steps);
 }
 
 esp_err_t chassis_move_distance_sync(chassis_mode_t mode, float distance_mm) {
@@ -543,7 +534,7 @@ esp_err_t chassis_move_distance_sync(chassis_mode_t mode, float distance_mm) {
         chassis_abort();
         return ESP_ERR_TIMEOUT;
     }
-    return ESP_OK;
+    return s_distance_cancelled ? ESP_ERR_INVALID_STATE : ESP_OK;
 }
 
 esp_err_t chassis_move_angle_sync(chassis_mode_t mode, float angle_deg) {
@@ -574,7 +565,9 @@ esp_err_t chassis_move_straight_sync(chassis_mode_t mode, float distance_mm, flo
 
     while (1) {
         if (g_stop_requested) { chassis_abort(); return ESP_FAIL; }
-        if (!s_distance_tracking) return ESP_OK;
+        if (!s_distance_tracking) {
+            return s_distance_cancelled ? ESP_ERR_INVALID_STATE : ESP_OK;
+        }
         uint64_t elapsed_ms = (uint64_t)((esp_timer_get_time() - start_time_us) / 1000);
         if (elapsed_ms >= timeout_ms) {
             chassis_abort();
@@ -582,17 +575,18 @@ esp_err_t chassis_move_straight_sync(chassis_mode_t mode, float distance_mm, flo
         }
 
         float error = 0.0f;
-        bool have_gyro = as201_get_latest(&d);
-        if (have_gyro) {
-            error = target_yaw_deg - d.yaw;
-            while (error > 180.0f) error -= 360.0f;
-            while (error < -180.0f) error += 360.0f;
+        if (!as201_get_latest(&d)) {
+            chassis_abort();
+            return ESP_ERR_TIMEOUT;
         }
+        error = target_yaw_deg - d.yaw;
+        while (error > 180.0f) error -= 360.0f;
+        while (error < -180.0f) error += 360.0f;
 
         float adjust = 0.0f;
-        if (!have_gyro || fabsf(error) < straight_yaw_pid.dead_zone_deg) {
+        if (fabsf(error) < straight_yaw_pid.dead_zone_deg) {
             chassis_pid_reset(&straight_yaw_pid);
-            straight_pid_has_previous_error = have_gyro;
+            straight_pid_has_previous_error = true;
             straight_yaw_pid.prev_error = error;
         } else {
             if (!straight_pid_has_previous_error) {

@@ -13,7 +13,6 @@ extern "C" {
 #define SCREEN_TX_GPIO          41      
 #define SCREEN_RX_GPIO          47      
 #define SCREEN_BAUD_RATE        115200
-#define SCREEN_LOG_ENABLE       1       
 
 typedef enum {
     SCREEN_EVT_NONE = 0, SCREEN_EVT_POINTS, SCREEN_EVT_START, SCREEN_EVT_STOP, SCREEN_EVT_PARAM, 

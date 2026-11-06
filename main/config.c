@@ -21,22 +21,17 @@ void config_get_task_points(task_point_t tp[TP_COUNT])
     tp[TP_NONE]   = (task_point_t){    0,                       0,                       0,   ACT_NONE, ""    };
     tp[TP_SCAN]   = (task_point_t){ 2200, 1200,  90,   ACT_SCAN, "SCAN"  };
     tp[TP_RAW]    = (task_point_t){ 1200, TP_RAW_Y, 0, ACT_GRAB, "RAW"   };
-    tp[TP_PROC1]  = (task_point_t){ 1200, 2095, 180, ACT_GRAB, "PROC1" };
-    tp[TP_PROC2]  = (task_point_t){ 1800, 1800, 180, ACT_GRAB, "PROC2" };
+    tp[TP_PROC]   = (task_point_t){ 1200, 2095, 180, ACT_GRAB, "PROC"  };
     tp[TP_TEMP]   = (task_point_t){  305, g_tempY, 270, ACT_GRAB, "TEMP"  };
 }
 
 void config_get_mission_sequence(task_point_id_t seq[12])
 {
-    // 默认任务顺序；修改序号会改变任务执行先后，TP_NONE 表示该槽位不执行任务。
+    static const task_point_id_t mission_sequence[MISSION_SEQUENCE_LENGTH] =
+        DEFAULT_MISSION_SEQUENCE;
+
     for (int i = 0; i < 12; i++) seq[i] = TP_NONE;
-    seq[0] = TP_SCAN;
-    seq[1] = TP_RAW;
-    seq[2] = TP_PROC1;
-    seq[3] = TP_PROC1;
-    seq[4] = TP_TEMP;
-    seq[5] = TP_RAW;
-    seq[6] = TP_PROC2;
-    seq[7] = TP_PROC2;
-    seq[8] = TP_TEMP;
+    for (int i = 0; i < MISSION_SEQUENCE_LENGTH; i++) {
+        seq[i] = mission_sequence[i];
+    }
 }

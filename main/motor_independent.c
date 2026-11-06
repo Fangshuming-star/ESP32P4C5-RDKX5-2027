@@ -60,8 +60,12 @@ static void IRAM_ATTR limit_isr_handler(void *arg) {
             s_run_flag[idx] = false;
             gpio_set_level(s_step_gpio[idx], 0);
             s_pulse_level[idx] = false;
-            s_current_steps[idx] = 0;
-            s_target_steps[idx] = 0;
+            if (s_cal_handle[idx] != NULL) {
+                s_current_steps[idx] = 0;
+                s_target_steps[idx] = 0;
+            } else {
+                s_target_steps[idx] = s_current_steps[idx];
+            }
         }
     }
 }

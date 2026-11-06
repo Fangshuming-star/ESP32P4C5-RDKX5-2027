@@ -4,6 +4,7 @@
 #include <inttypes.h>
 #include "driver/uart.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -28,6 +29,7 @@ static size_t  s_len = 0;
 static TaskHandle_t s_task = NULL;
 static as201_data_t s_last_data; 
 static volatile bool s_data_valid = false;
+static int64_t s_last_valid_us = 0;
 static SemaphoreHandle_t s_data_mutex = NULL; 
 
 /* ==================== 三、协议解析区 ==================== */
@@ -123,9 +125,14 @@ static void as201_task(void *arg) {
     as201_data_t d;
     while (1) {
         if (as201_read(&d, 500) == ESP_OK) {
+#if AS201_LOG_ENABLE
+            ESP_LOGI(TAG, "yaw=%.2f° pitch=%.2f° roll=%.2f°",
+                     d.yaw, d.pitch, d.roll);
+#endif
             if (s_data_mutex) {
                 xSemaphoreTake(s_data_mutex, portMAX_DELAY);
                 s_last_data = d; s_data_valid = true;
+                s_last_valid_us = esp_timer_get_time();
                 xSemaphoreGive(s_data_mutex);
             }
         } else vTaskDelay(pdMS_TO_TICKS(100));
@@ -139,9 +146,12 @@ esp_err_t as201_start(void) {
 }
 
 bool as201_get_latest(as201_data_t *out) {
-    if (out == NULL || s_data_mutex == NULL || !s_data_valid) return false;
+    if (out == NULL || s_data_mutex == NULL) return false;
     xSemaphoreTake(s_data_mutex, portMAX_DELAY);
-    *out = s_last_data;
+    bool valid = s_data_valid &&
+        (esp_timer_get_time() - s_last_valid_us) <=
+            (int64_t)AS201_DATA_TIMEOUT_MS * 1000;
+    if (valid) *out = s_last_data;
     xSemaphoreGive(s_data_mutex);
-    return true;
+    return valid;
 }

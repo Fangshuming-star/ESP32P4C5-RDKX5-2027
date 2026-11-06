@@ -15,10 +15,10 @@
 #define ARM_SCREEN_DEBUG_ENABLE 1
 
 // 1=START 执行下方硬编码动作；0=执行 A* 寻路任务。
-#define AUTO_RUN_SEQUENCE_ENABLE 1
+#define AUTO_RUN_SEQUENCE_ENABLE 0
 // 硬编码动作：W/S 前进/后退，A/D 左右平移，Q/E 原地转，WA/WD/WS/WE 绕角转。
 // 每个动作的格式为“动作:数值”，动作之间用空格分隔；直线单位 mm，旋转单位度。
-#define AUTO_RUN_SEQUENCE_STR   "W:2120"
+#define AUTO_RUN_SEQUENCE_STR   "S:2120"
 
 // 任务等待方式：0=等待固定时间；1=等待对应任务发出完成信号。
 #define ACTION_WAIT_MODE_DELAY          1
@@ -36,7 +36,11 @@
 #endif
 
 // 1=打印 AS201 陀螺仪原始数据；数据量大或串口繁忙时设为 0。
-#define AS201_LOG_ENABLE        aADX
+#define AS201_LOG_ENABLE        0
+#define AS201_DATA_TIMEOUT_MS   250
+#if AS201_DATA_TIMEOUT_MS < 1
+#error "AS201_DATA_TIMEOUT_MS must be greater than 0"
+#endif
 // 1=打印 A* 寻路航点；排查路线时开启，正常运行可关闭。
 #define PATH_LOG_ENABLE         1
 // 1=打印串口屏收发日志；排查屏幕通信时开启，避免刷屏可关闭。
@@ -174,11 +178,11 @@
  * 摆动/变化过快时再增加 KD。一次只改一个参数并记录实测结果。
  */
 // 比例增益（Hz/度）；误差越大差速越大，纠偏太弱时增大，左右摆动时减小。
-#define STRAIGHT_YAW_PID_KP 45.0f
+#define STRAIGHT_YAW_PID_KP 200.0f
 // 积分增益（Hz/(度·秒)）；用于消除持续小偏差，缓慢偏航可小幅增大，低频摆动时减小。
 #define STRAIGHT_YAW_PID_KI 0.01f
 // 微分增益（Hz/(度/秒)）；用于抑制误差快速变化，过冲/摆动时小幅增大，噪声放大时减小。
-#define STRAIGHT_YAW_PID_KD 5.0f
+#define STRAIGHT_YAW_PID_KD 80.0f
 // 积分状态限幅（度·秒）；增大可积累更多持续纠偏量，但更易产生积分过冲。
 #define STRAIGHT_YAW_PID_INTEGRAL_MAX 20.0f
 // PID 单侧差速输出上限（Hz）；纠偏输出受限时可适当增大，同时检查轮速上限和稳定性。
@@ -207,11 +211,11 @@
  * ============================================================ */
 
 // 旋转比例增益（约 Hz/度）；旋转太慢可增大，临近目标震荡或过冲时减小。
-#define PID_KP_DEFAULT          20.0f
+#define PID_KP_DEFAULT          15.0f
 // 旋转积分增益；用于补偿持续偏差，通常保持 0，确有稳定偏差再小幅增加。
 #define PID_KI_DEFAULT          0.0f
 // 旋转微分增益；提前减速/抑制过冲，过冲时可增大，输出抖动或响应迟钝时减小。
-#define PID_KD_DEFAULT          10.0f
+#define PID_KD_DEFAULT          5.0f
 // 旋转到达死区（度）；增大可减少目标附近反复追转但降低精度，过小可能难以稳定到达。
 #define PID_DEAD_ZONE_DEG       0.30f
 // 原地旋转 PID 更新周期（ms）；当前有效范围为 1~10ms，需不小于系统 tick 分辨率。
@@ -324,9 +328,9 @@ extern volatile bool g_skip_scan;
  * 11. 任务点、动作类型与任务结束行为
  * 任务点坐标由 config.c 中的 config_get_task_points() 设置。
  * ============================================================ */
-
+// 任务点代号定义：TP_SCAN=二维码、TP_RAW=原料区、TP_PROC=加工区、TP_TEMP=暂存区、TP_NONE=不执行；
 typedef enum {
-    TP_NONE = 0, TP_SCAN, TP_RAW, TP_PROC1, TP_PROC2, TP_TEMP, TP_COUNT
+    TP_NONE = 0, TP_SCAN, TP_RAW, TP_PROC, TP_TEMP, TP_COUNT
 } task_point_id_t;
 
 typedef enum { ACT_NONE = 0, ACT_SCAN, ACT_GRAB } action_type_t;
@@ -338,12 +342,30 @@ typedef struct {
     const char *name;       // 日志/显示使用的任务点名称。
 } task_point_t;
 
+// 默认路线中实际执行的任务点数量；修改路线时同步更新此值。
+#define MISSION_SEQUENCE_LENGTH 9
+// 默认路线定义：修改此列表即可调整各任务点的前往顺序。
+// 顺序：二维码 -> 原料 -> 加工区操作两步 -> 暂存 -> 原料 -> 加工区操作两步 -> 暂存。
+// 相邻的 TP_PROC 表示在同一加工区连续执行两个流程步骤，不会改变加工区坐标。
+// 回到启停区不写在列表中，由 RETURN_TO_START 在任务结束时统一控制。
+#define DEFAULT_MISSION_SEQUENCE { \
+    TP_SCAN, /* 1: 前往二维码点并扫码。 */ \
+    TP_RAW,  /* 2: 前往原料区，处理第一批原料。 */ \
+    TP_PROC, /* 3: 前往加工区，第一批流程步骤。 */ \
+    TP_PROC, /* 4: 留在加工区，完成第一批后续步骤。 */ \
+    TP_TEMP, /* 5: 前往暂存区，放置第一批物料。 */ \
+    TP_RAW,  /* 6: 返回原料区，处理第二批原料。 */ \
+    TP_PROC, /* 7: 前往同一个加工区，第二批流程步骤。 */ \
+    TP_PROC, /* 8: 留在加工区，完成第二批后续步骤。 */ \
+    TP_TEMP  /* 9: 前往暂存区，放置第二批物料。 */ \
+}
+
 // 原料点 Y 坐标：原料区间隙 + 抓取机构半径 + 半车宽，与网页版一致。
 #define TP_RAW_Y  (g_rawGap + RAW_GRAB_RADIUS_MM + g_carW / 2.0f)
 
 // 获取各任务点坐标、目标航向与动作定义。
 void config_get_task_points(task_point_t tp[TP_COUNT]);
-// 获取默认任务点执行顺序；数组容量为 12，未使用项填 TP_NONE。
+// 获取 config.h 中定义的默认任务点顺序；数组容量为 12，未使用项填 TP_NONE。
 void config_get_mission_sequence(task_point_id_t seq[12]);
 
 // 1=任务结束后返回所选启停区，0=停在任务终点。

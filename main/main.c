@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <ctype.h>
 #include <stdlib.h>
+#include <inttypes.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -56,9 +57,11 @@ static bool g_gyro_debug_on = false;
 
 #define PATH_COMMAND_SIZE          32
 #define PATH_MAX_STRAFE_DIST_MM    300.0f
+#define PATH_COMMAND_ACK_TIMEOUT_MS 120000
 
 static QueueHandle_t s_path_command_queue = NULL;
 static QueueHandle_t s_path_ack_queue = NULL;
+static bool s_path_executor_faulted = false;
 static float s_executor_target_yaw = 0.0f;
 static bool s_executor_yaw_ready = false;
 
@@ -265,6 +268,10 @@ static bool send_path_command(const char *command)
         ESP_LOGE(TAG, "路径指令队列尚未初始化");
         return false;
     }
+    if (s_path_executor_faulted) {
+        ESP_LOGE(TAG, "路径执行器已因确认超时停用");
+        return false;
+    }
     if (g_stop_requested) return false;
 
     if (xQueueSend(s_path_command_queue, command, portMAX_DELAY) != pdTRUE) {
@@ -274,8 +281,14 @@ static bool send_path_command(const char *command)
     ESP_LOGI(TAG, "Planner -> Executor: %s", command);
 
     esp_err_t result;
-    if (xQueueReceive(s_path_ack_queue, &result, portMAX_DELAY) != pdTRUE) {
-        ESP_LOGE(TAG, "等待路径指令确认失败: %s", command);
+    TickType_t ack_timeout = pdMS_TO_TICKS(PATH_COMMAND_ACK_TIMEOUT_MS);
+    if (ack_timeout == 0) ack_timeout = 1;
+    if (xQueueReceive(s_path_ack_queue, &result, ack_timeout) != pdTRUE) {
+        s_path_executor_faulted = true;
+        g_stop_requested = true;
+        chassis_abort();
+        ESP_LOGE(TAG, "等待路径指令确认超时，已停止底盘并停用路径执行器: %s",
+                 command);
         return false;
     }
     if (result != ESP_OK) {
@@ -315,6 +328,17 @@ static bool send_move_command(char direction, float distance_mm)
         return false;
     }
     return send_path_command(command);
+}
+
+static bool send_axis_move(char direction, float distance_mm)
+{
+    if (distance_mm <= 0.5f) return true;
+    if (direction == 'A') direction = 'B';
+    else if (direction == 'D') direction = 'A';
+
+    return (direction == 'A' || direction == 'B') ?
+        send_strafe_commands(direction, distance_mm) :
+        send_move_command(direction, distance_mm);
 }
 
 static bool parse_path_command(const char *command, char *opcode, float *value)
@@ -443,6 +467,7 @@ static void calibrate_zero_yaw(void)
 {
     ESP_LOGI(TAG, "══════ 开始重新标定陀螺仪零位（请保持静止）══════");
 
+    s_start_yaw_ready = false;
     as201_data_t d;
     int wait_cnt = 0;
 
@@ -451,7 +476,9 @@ static void calibrate_zero_yaw(void)
         vTaskDelay(pdMS_TO_TICKS(50));
         if (g_stop_requested) return;
         if (++wait_cnt > 100) {
-            s_start_yaw_ready = true;
+            ESP_LOGE(TAG, "❌ 等待陀螺仪数据超时，零位标定失败");
+            g_stop_requested = true;
+            chassis_abort();
             return;
         }
     }
@@ -476,10 +503,14 @@ static void calibrate_zero_yaw(void)
         if (g_stop_requested) return;
     }
 
-    if (n > 0) {
-        s_start_yaw = atan2f(sin_sum, cos_sum) * 180.0f / (float)M_PI;
-        ESP_LOGI(TAG, "★ 重新标定完成，当前零位: %.2f°", s_start_yaw);
+    if (n == 0) {
+        ESP_LOGE(TAG, "❌ 零位采样期间没有有效陀螺仪数据，标定失败");
+        g_stop_requested = true;
+        chassis_abort();
+        return;
     }
+    s_start_yaw = atan2f(sin_sum, cos_sum) * 180.0f / (float)M_PI;
+    ESP_LOGI(TAG, "★ 重新标定完成，当前零位: %.2f°", s_start_yaw);
     s_start_yaw_ready = true;
 }
 
@@ -672,52 +703,72 @@ static bool execute_path(const path_plan_t *plan)
         if (dist <= PATH_STRAFE_THRESHOLD_MM) {
             float local_w = -dx * cosf(current_angle) - dy * sinf(current_angle);
             float local_d = -dx * sinf(current_angle) + dy * cosf(current_angle);
-            if (fabsf(local_w) > fabsf(local_d)) {
+            bool moved = true;
+            if (fabsf(local_w) > 0.5f) {
                 move_opcode = local_w > 0.0f ? 'W' : 'S';
-            } else {
+                moved = send_axis_move(move_opcode, fabsf(local_w));
+            }
+            if (moved && fabsf(local_d) > 0.5f) {
                 move_opcode = local_d > 0.0f ? 'D' : 'A';
+                moved = send_axis_move(move_opcode, fabsf(local_d));
+            }
+            if (!moved) {
+                ESP_LOGE(TAG, "❌ 航点 %d 的短距离分量移动失败", i);
+                g_stop_requested = true;
+                chassis_abort();
+                return false;
+            }
+            s_cur_x = plan->points[i].x;
+            s_cur_y = plan->points[i].y;
+            continue;
+        }
+
+        if (fabsf(dx) > 0.5f && fabsf(dy) > 0.5f) {
+            ESP_LOGE(TAG, "❌ 航点 %d 非轴对齐，拒绝执行以避免定位误差", i);
+            g_stop_requested = true;
+            chassis_abort();
+            return false;
+        }
+
+        float abs_angle = 0.0f;
+        if (dx > 0.0f) abs_angle = (float)M_PI;
+        else if (dx < 0.0f) abs_angle = 0.0f;
+        else if (dy > 0.0f) abs_angle = -(float)M_PI / 2.0f;
+        else abs_angle = (float)M_PI / 2.0f;
+
+        float end_angle_s = abs_angle + (float)M_PI;
+        if (end_angle_s > (float)M_PI) end_angle_s -= 2.0f * (float)M_PI;
+        float diff_w = normalize_angle_delta(
+            (abs_angle - current_angle) * 180.0f / (float)M_PI);
+        float diff_s = normalize_angle_delta(
+            (end_angle_s - current_angle) * 180.0f / (float)M_PI);
+
+        if (fabsf(diff_w) <= fabsf(diff_s)) {
+            move_opcode = 'W';
+            if (diff_w != 0.0f) {
+                char rotation_command[PATH_COMMAND_SIZE];
+                char rotation_opcode = diff_w > 0.0f ? 'E' : 'Q';
+                int length = snprintf(rotation_command, sizeof(rotation_command),
+                                      "%c:%.6g\n", rotation_opcode, fabsf(diff_w));
+                if (length < 0 || length >= (int)sizeof(rotation_command) ||
+                    !send_path_command(rotation_command)) {
+                    ESP_LOGE(TAG, "❌ 转向失败！航点 %d 执行中止！", i);
+                    g_stop_requested = true;
+                    return false;
+                }
             }
         } else {
-            float abs_angle = 0.0f;
-            if (dx > 0.0f) abs_angle = (float)M_PI;
-            else if (dx < 0.0f) abs_angle = 0.0f;
-            else if (dy > 0.0f) abs_angle = -(float)M_PI / 2.0f;
-            else abs_angle = (float)M_PI / 2.0f;
-
-            float end_angle_s = abs_angle + (float)M_PI;
-            if (end_angle_s > (float)M_PI) end_angle_s -= 2.0f * (float)M_PI;
-            float diff_w = normalize_angle_delta(
-                (abs_angle - current_angle) * 180.0f / (float)M_PI);
-            float diff_s = normalize_angle_delta(
-                (end_angle_s - current_angle) * 180.0f / (float)M_PI);
-
-            if (fabsf(diff_w) <= fabsf(diff_s)) {
-                move_opcode = 'W';
-                if (diff_w != 0.0f) {
-                    char rotation_command[PATH_COMMAND_SIZE];
-                    char rotation_opcode = diff_w > 0.0f ? 'E' : 'Q';
-                    int length = snprintf(rotation_command, sizeof(rotation_command),
-                                          "%c:%.6g\n", rotation_opcode, fabsf(diff_w));
-                    if (length < 0 || length >= (int)sizeof(rotation_command) ||
-                        !send_path_command(rotation_command)) {
-                        ESP_LOGE(TAG, "❌ 转向失败！航点 %d 执行中止！", i);
-                        g_stop_requested = true;
-                        return false;
-                    }
-                }
-            } else {
-                move_opcode = 'S';
-                if (diff_s != 0.0f) {
-                    char rotation_command[PATH_COMMAND_SIZE];
-                    char rotation_opcode = diff_s > 0.0f ? 'E' : 'Q';
-                    int length = snprintf(rotation_command, sizeof(rotation_command),
-                                          "%c:%.6g\n", rotation_opcode, fabsf(diff_s));
-                    if (length < 0 || length >= (int)sizeof(rotation_command) ||
-                        !send_path_command(rotation_command)) {
-                        ESP_LOGE(TAG, "❌ 转向失败！航点 %d 执行中止！", i);
-                        g_stop_requested = true;
-                        return false;
-                    }
+            move_opcode = 'S';
+            if (diff_s != 0.0f) {
+                char rotation_command[PATH_COMMAND_SIZE];
+                char rotation_opcode = diff_s > 0.0f ? 'E' : 'Q';
+                int length = snprintf(rotation_command, sizeof(rotation_command),
+                                      "%c:%.6g\n", rotation_opcode, fabsf(diff_s));
+                if (length < 0 || length >= (int)sizeof(rotation_command) ||
+                    !send_path_command(rotation_command)) {
+                    ESP_LOGE(TAG, "❌ 转向失败！航点 %d 执行中止！", i);
+                    g_stop_requested = true;
+                    return false;
                 }
             }
         }
@@ -902,11 +953,17 @@ static void execute_mission(void)
         path_plan_t plan;
         if (!path_planner_find(s_cur_x, s_cur_y, target->x_mm, target->y_mm, cur_rad, &plan)) {
             screen_send_str("C:No Path");
+            g_stop_requested = true;
+            chassis_abort();
             break;
         }
 
         if (!execute_path(&plan)) {
             screen_send_str("C:Path Fail");
+            if (!g_stop_requested) {
+                g_stop_requested = true;
+                chassis_abort();
+            }
             break;
         }
 
@@ -948,12 +1005,18 @@ static void execute_mission(void)
                               current_simulator_deg() * (float)M_PI / 180.0f, &plan)) {
             if (!execute_path(&plan)) {
                 screen_send_str("C:Path Fail");
+                if (!g_stop_requested) {
+                    g_stop_requested = true;
+                    chassis_abort();
+                }
             } else {
                 s_cur_x = rx;
                 s_cur_y = ry;
             }
         } else {
             screen_send_str("C:No Path");
+            g_stop_requested = true;
+            chassis_abort();
         }
         if (!g_stop_requested) {
             rotate_to_heading(simulator_deg_to_yaw(RETURN_HEADING_DEG));
@@ -1000,12 +1063,35 @@ static void main_task(void *arg)
         case SCREEN_EVT_POINTS:
             /* 屏幕下发 5 个动态障碍点：vals[p*3+0] 有效标志，+1 X，+2 Y（像素） */
             path_planner_clear_dynamic_obstacles();
+            {
+                int added_count = 0;
             for (int p = 0; p < 5; p++) {
-                if (msg.data.points.vals[p * 3] == 1) {
-                    float mm_x = (float)msg.data.points.vals[p * 3 + 1] * SCREEN_PX_TO_MM;
-                    float mm_y = (float)msg.data.points.vals[p * 3 + 2] * SCREEN_PX_TO_MM;
+                int32_t valid = msg.data.points.vals[p * 3];
+                int32_t px_x = msg.data.points.vals[p * 3 + 1];
+                int32_t px_y = msg.data.points.vals[p * 3 + 2];
+                if (valid == 1) {
+                    if (px_x > 272 || px_y > 272) {
+                        ESP_LOGW(TAG, "屏幕障碍点%d坐标越界，像素坐标=(%" PRId32 ",%" PRId32 ")",
+                                 p + 1, px_x, px_y);
+                        continue;
+                    }
+                    float mm_x = (float)px_x * SCREEN_PX_TO_MM;
+                    float mm_y = (float)px_y * SCREEN_PX_TO_MM;
                     path_planner_add_dynamic_obstacle(mm_x, mm_y);
+                    added_count++;
+#if SCREEN_LOG_ENABLE
+                    ESP_LOGI(TAG, "屏幕障碍点%d: 像素=(%" PRId32 ",%" PRId32
+                             ") 地图=(%.1f,%.1f)mm",
+                             p + 1, px_x, px_y, mm_x, mm_y);
+#endif
+                } else if (valid != 0) {
+                    ESP_LOGW(TAG, "屏幕障碍点%d有效标记异常: %" PRId32, p + 1, valid);
                 }
+            }
+#if SCREEN_LOG_ENABLE
+            ESP_LOGI(TAG, "障碍物更新完成：收到5个槽位，加入%d个有效障碍点",
+                     added_count);
+#endif
             }
             break;
 
@@ -1028,6 +1114,11 @@ static void main_task(void *arg)
         case SCREEN_EVT_START:
             /* 底盘调试开启时，屏幕 START 不启动任务，避免抢控制 */
             if (CHASSIS_DEBUG_ENABLE) break;
+            if (s_path_executor_faulted) {
+                ESP_LOGE(TAG, "路径执行器此前确认超时，需重启设备后才能重新运行");
+                screen_send_str("C:Executor Error");
+                break;
+            }
 
             if (s_mission_task_handle == NULL) {
                 g_stop_requested = false;

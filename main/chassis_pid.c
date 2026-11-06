@@ -81,15 +81,25 @@ float chassis_pid_update(chassis_pid_t *pid, float error_deg, float dt_sec) {
     pid->filtered_derivative += derivative_filter_alpha *
                                 (derivative - pid->filtered_derivative);
 
-    float integral = pid->integral + error_deg * dt_sec;
-    if (integral > pid->integral_max) integral = pid->integral_max;
-    if (integral < -pid->integral_max) integral = -pid->integral_max;
-    pid->integral = integral;
+    float candidate_integral = pid->integral + error_deg * dt_sec;
+    if (candidate_integral > pid->integral_max) {
+        candidate_integral = pid->integral_max;
+    }
+    if (candidate_integral < -pid->integral_max) {
+        candidate_integral = -pid->integral_max;
+    }
+
+    float proportional_derivative = pid->kp * error_deg +
+                                    pid->kd * pid->filtered_derivative;
+    float candidate_output = proportional_derivative +
+                             pid->ki * candidate_integral;
+    bool drives_further_into_saturation =
+        (candidate_output > pid->output_max && error_deg > 0.0f) ||
+        (candidate_output < -pid->output_max && error_deg < 0.0f);
+    if (!drives_further_into_saturation) pid->integral = candidate_integral;
     pid->prev_error = error_deg;
 
-    float output = pid->kp * error_deg +
-                   pid->ki * pid->integral +
-                   pid->kd * pid->filtered_derivative;
+    float output = proportional_derivative + pid->ki * pid->integral;
     if (output > pid->output_max) output = pid->output_max;
     if (output < -pid->output_max) output = -pid->output_max;
     return output;

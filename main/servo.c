@@ -46,6 +46,12 @@ void servo_set_angle(int servo_id, float angle_deg) {
 #if !SERVO_2_ENABLE
     if (servo_id == 2) return;
 #endif
+#if !SERVO_3_ENABLE
+    if (servo_id == 3) return;
+#endif
+#if !SERVO_4_ENABLE
+    if (servo_id == 4) return;
+#endif
     float min_angle = 0.0f, max_angle = 180.0f;
     if (servo_id == 1) { min_angle = SERVO_A_MIN_ANGLE; max_angle = SERVO_A_MAX_ANGLE; }
     else if (servo_id == 2) { min_angle = SERVO_B_MIN_ANGLE; max_angle = SERVO_B_MAX_ANGLE; }

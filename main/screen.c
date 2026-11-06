@@ -4,11 +4,43 @@
 #include <string.h>
 #include "driver/uart.h"
 #include "esp_log.h"
+#include "freertos/semphr.h"
 
 static const char *TAG = "SCREEN";
 
 /* ==================== 一、全局队列区 ==================== */
 static QueueHandle_t s_screen_queue = NULL;
+static SemaphoreHandle_t s_screen_tx_mutex = NULL;
+
+static int32_t read_le_i32(const uint8_t *src)
+{
+    uint32_t value = (uint32_t)src[0] |
+                     ((uint32_t)src[1] << 8) |
+                     ((uint32_t)src[2] << 16) |
+                     ((uint32_t)src[3] << 24);
+    int32_t result;
+    memcpy(&result, &value, sizeof(result));
+    return result;
+}
+
+static bool parse_points_message(const uint8_t *buf, size_t payload_len,
+                                 screen_msg_t *msg)
+{
+    if (payload_len != 83 || memcmp(buf, "POINTS,5,", 9) != 0) {
+        return false;
+    }
+
+    msg->type = SCREEN_EVT_POINTS;
+    for (int i = 0; i < 15; i++) {
+        size_t offset = 9U + (size_t)i * 5U;
+        msg->data.points.vals[i] = read_le_i32(buf + offset);
+        if (i < 14 && buf[offset + 4] != ',') {
+            msg->type = SCREEN_EVT_NONE;
+            return false;
+        }
+    }
+    return true;
+}
 
 /* ==================== 二、串口接收与解析区 ==================== */
 static void screen_rx_task(void *arg) {
@@ -17,6 +49,10 @@ static void screen_rx_task(void *arg) {
     while (1) {
         int n = uart_read_bytes(port, tmp, sizeof(tmp), pdMS_TO_TICKS(50));
         if (n <= 0) continue;
+#if SCREEN_LOG_ENABLE
+        ESP_LOGI(TAG, "UART RX 收到 %d 字节", n);
+        ESP_LOG_BUFFER_HEX_LEVEL(TAG, tmp, n, ESP_LOG_INFO);
+#endif
         if (len + n > sizeof(buf)) len = 0; 
         memcpy(buf + len, tmp, n); len += n;
         while (len >= 3) {
@@ -27,9 +63,14 @@ static void screen_rx_task(void *arg) {
             if (end_idx < 0) break;
             screen_msg_t msg = {0};
 
-            if (end_idx == 83 && memcmp(buf, "POINTS,5", 8) == 0) {
-                msg.type = SCREEN_EVT_POINTS;
-                for (int v = 0; v < 15; v++) memcpy(&msg.data.points.vals[v], buf + 9 + v * 5, 4);
+            bool is_points_frame = end_idx >= 8 &&
+                memcmp(buf, "POINTS,5", 8) == 0;
+            if (parse_points_message(buf, (size_t)end_idx, &msg)) {
+#if SCREEN_LOG_ENABLE
+                ESP_LOGI(TAG, "解析到障碍物 POINTS 数据，共 5 个槽位");
+#endif
+            } else if (is_points_frame) {
+                ESP_LOGW(TAG, "POINTS 帧格式错误，payload 长度=%d", end_idx);
             } else if (end_idx > 0) {
                 char text[128] = {0};
                 memcpy(text, buf, (end_idx < 127) ? end_idx : 127);
@@ -52,7 +93,11 @@ static void screen_rx_task(void *arg) {
                 else if (strncmp(text, "disen", 5) == 0) { msg.type = SCREEN_EVT_DISEN; }
                 else if (strncmp(text, "UAR", 3) == 0)   { msg.type = SCREEN_EVT_UAR; strncpy(msg.data.text, text, sizeof(msg.data.text)-1); }
             }
-            if (msg.type != SCREEN_EVT_NONE) xQueueSend(s_screen_queue, &msg, 0);
+            if (msg.type != SCREEN_EVT_NONE) {
+                if (xQueueSend(s_screen_queue, &msg, 0) != pdTRUE) {
+                    ESP_LOGW(TAG, "屏幕事件队列已满，丢弃事件 type=%d", msg.type);
+                }
+            }
             size_t consumed = end_idx + 3;
             memmove(buf, buf + consumed, len - consumed); len -= consumed;
         }
@@ -62,6 +107,11 @@ static void screen_rx_task(void *arg) {
 /* ==================== 三、生命周期与发送区 ==================== */
 void screen_init(void) {
     s_screen_queue = xQueueCreate(10, sizeof(screen_msg_t));
+    s_screen_tx_mutex = xSemaphoreCreateMutex();
+    if (s_screen_queue == NULL || s_screen_tx_mutex == NULL) {
+        ESP_LOGE(TAG, "创建串口屏队列或发送互斥量失败");
+        return;
+    }
     uart_config_t cfg = {
         .baud_rate  = SCREEN_BAUD_RATE, .data_bits  = UART_DATA_8_BITS, .parity     = UART_PARITY_DISABLE,
         .stop_bits  = UART_STOP_BITS_1, .flow_ctrl  = UART_HW_FLOWCTRL_DISABLE, .source_clk = UART_SCLK_DEFAULT,
@@ -75,9 +125,15 @@ void screen_init(void) {
 
 void screen_send_str(const char *msg) {
     if (!msg) return;
+    if (s_screen_tx_mutex == NULL) {
+        ESP_LOGE(TAG, "串口屏尚未初始化，无法发送消息");
+        return;
+    }
+    xSemaphoreTake(s_screen_tx_mutex, portMAX_DELAY);
     uart_write_bytes((uart_port_t)SCREEN_UART_PORT_NUM, msg, strlen(msg));
     const uint8_t end[3] = {0xFF, 0xFF, 0xFF};
     uart_write_bytes((uart_port_t)SCREEN_UART_PORT_NUM, end, 3);
+    xSemaphoreGive(s_screen_tx_mutex);
     vTaskDelay(pdMS_TO_TICKS(30)); 
 }
 
