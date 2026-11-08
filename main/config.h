@@ -215,7 +215,7 @@
 // 旋转积分增益；用于补偿持续偏差，通常保持 0，确有稳定偏差再小幅增加。
 #define PID_KI_DEFAULT          0.0f
 // 旋转微分增益；提前减速/抑制过冲，过冲时可增大，输出抖动或响应迟钝时减小。
-#define PID_KD_DEFAULT          5.0f
+#define PID_KD_DEFAULT          2.0f
 // 旋转到达死区（度）；增大可减少目标附近反复追转但降低精度，过小可能难以稳定到达。
 #define PID_DEAD_ZONE_DEG       0.30f
 // 原地旋转 PID 更新周期（ms）；当前有效范围为 1~10ms，需不小于系统 tick 分辨率。

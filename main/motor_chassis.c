@@ -97,7 +97,7 @@ static volatile uint32_t s_distance_cruise_hz[CHASSIS_MOTOR_NUM];
 static void finish_distance_motor(int motor);
 
 /* ============================================================
- * 脉冲生成回调 (由硬件定时器每50us触发一次)
+ * 脉冲生成回调 (由软件定时器每100us触发一次)
  * ============================================================ */
 static void pulse_timer_cb(void *arg) {
     uint64_t now = esp_timer_get_time();
@@ -271,7 +271,7 @@ esp_err_t chassis_init(void) {
 
     esp_timer_create_args_t p_args = { .callback = &pulse_timer_cb, .name = "chassis_pulse" };
     esp_timer_create(&p_args, &s_pulse_timer);
-    esp_timer_start_periodic(s_pulse_timer, 50); 
+    esp_timer_start_periodic(s_pulse_timer, 100);
 
     s_move_done_sem = xSemaphoreCreateBinary();
     xTaskCreate(speed_control_task, "chassis_speed", 2048, NULL, 4, NULL);

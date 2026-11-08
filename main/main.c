@@ -131,15 +131,31 @@ static float yaw_to_simulator_deg(float yaw)
 
 static float current_simulator_deg(void)
 {
-#if CHASSIS_ROTATION_ERROR_ACCUMULATION_ENABLE
-    if (s_executor_yaw_ready) {
-        return yaw_to_simulator_deg(s_executor_target_yaw);
+    as201_data_t data;
+    float angle;
+    if (as201_get_latest(&data)) {
+        angle = yaw_to_simulator_deg(data.yaw);
+    } else if (s_executor_yaw_ready) {
+        angle = yaw_to_simulator_deg(s_executor_target_yaw);
+    } else {
+        angle = 180.0f - current_world_deg();
     }
-#endif
-    float angle = 180.0f - current_world_deg();
     while (angle >= 360.0f) angle -= 360.0f;
     while (angle < 0.0f) angle += 360.0f;
     return angle;
+}
+
+static bool sync_executor_yaw_to_actual(void)
+{
+    as201_data_t data;
+    if (!as201_get_latest(&data)) {
+        s_executor_yaw_ready = false;
+        return false;
+    }
+
+    s_executor_target_yaw = data.yaw;
+    s_executor_yaw_ready = true;
+    return true;
 }
 
 static path_point_t get_zone_start_position(void)
@@ -203,9 +219,6 @@ static esp_err_t verify_heading(float target_yaw, chassis_mode_t rotation_mode)
 
 static esp_err_t rotate_to_heading(float target_yaw)
 {
-    s_executor_target_yaw = target_yaw;
-    s_executor_yaw_ready = true;
-
     as201_data_t data;
     if (!as201_get_latest(&data)) {
         chassis_abort();
@@ -218,15 +231,25 @@ static esp_err_t rotate_to_heading(float target_yaw)
     while (error > 180.0f) error -= 360.0f;
     while (error < -180.0f) error += 360.0f;
     if (fabsf(error) <= CHASSIS_ROTATE_TIMEOUT_ACCEPT_ERROR_DEG) {
+        s_executor_target_yaw = data.yaw;
+        s_executor_yaw_ready = true;
         ESP_LOGI(TAG, "任务点航向已满足: 当前 %.1f°，目标 %.1f°",
                  data.yaw, target_yaw);
         return ESP_OK;
     }
 
+    s_executor_target_yaw = target_yaw;
+    s_executor_yaw_ready = true;
     ESP_LOGI(TAG, "转到任务点目标航向: 当前 %.1f°，目标 %.1f°，误差 %.1f°",
              data.yaw, target_yaw, error);
     esp_err_t ret = chassis_rotate_to_yaw_mode(
         CHASSIS_MODE_ROTATE_LEFT, target_yaw, CHASSIS_ROTATE_TIMEOUT_MS);
+    if (ret == ESP_OK && !sync_executor_yaw_to_actual()) {
+        chassis_abort();
+        g_stop_requested = true;
+        ESP_LOGE(TAG, "❌ 旋转后无法读取陀螺仪实际航向，停止后续任务");
+        return ESP_FAIL;
+    }
     if (ret != ESP_OK) {
         chassis_abort();
         g_stop_requested = true;
@@ -399,6 +422,8 @@ static esp_err_t execute_path_command(const char *command)
     if (opcode == 'Q' || opcode == 'R' || opcode == 'E') {
         chassis_mode_t rotation_mode = (opcode == 'Q') ?
             CHASSIS_MODE_ROTATE_LEFT : CHASSIS_MODE_ROTATE_RIGHT;
+        if (!read_current_yaw(&s_executor_target_yaw)) return ESP_FAIL;
+        s_executor_yaw_ready = true;
         float target_yaw = s_executor_target_yaw +
             chassis_yaw_delta_for_rotation(rotation_mode, value);
 
@@ -407,7 +432,12 @@ static esp_err_t execute_path_command(const char *command)
         esp_err_t result = chassis_rotate_to_yaw_mode(
             rotation_mode, target_yaw, CHASSIS_ROTATE_TIMEOUT_MS);
         chassis_stop();
-        if (result == ESP_OK) s_executor_target_yaw = target_yaw;
+        if (result == ESP_OK && !sync_executor_yaw_to_actual()) {
+            chassis_abort();
+            g_stop_requested = true;
+            ESP_LOGE(TAG, "❌ 路径旋转后无法读取陀螺仪实际航向，停止后续任务");
+            return ESP_FAIL;
+        }
         return result;
     }
 

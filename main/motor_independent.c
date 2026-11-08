@@ -284,7 +284,7 @@ void motor_independent_init(void) {
 
     esp_timer_create_args_t t_args = { .callback = &pulse_timer_cb, .name = "ind_pulse" };
     esp_timer_create(&t_args, &s_pulse_timer);
-    esp_timer_start_periodic(s_pulse_timer, 50); 
+    esp_timer_start_periodic(s_pulse_timer, 100);
     
 #if ARM_SERIAL_DEBUG_ENABLE
     xTaskCreate(serial_test_task, "ind_serial", 4096, NULL, 4, NULL);
