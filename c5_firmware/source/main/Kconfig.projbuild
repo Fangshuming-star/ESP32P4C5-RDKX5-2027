@@ -1,0 +1,3 @@
+# ESP-Hosted co-processor configuration is provided by the `esp_hosted`
+# component (see its own Kconfig). No project-specific options are required.
+

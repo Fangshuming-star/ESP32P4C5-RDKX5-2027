@@ -1,0 +1,12 @@
+# ESP-IDF build output
+build/
+sdkconfig
+sdkconfig.old
+flash_*.bin
+
+# 组件管理器下载的组件
+managed_components/
+
+# VSCode
+.vscode/
+.DS_Store

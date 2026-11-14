@@ -1,0 +1,34 @@
+menu "P4 Host OTA Configuration"
+
+    config ESP_WIFI_SSID
+        string "WiFi SSID"
+        default "myssid"
+        help
+            SSID (network name) for the host to connect to.
+
+    config ESP_WIFI_PASSWORD
+        string "WiFi Password"
+        default "mypassword"
+        help
+            WiFi password (WPA/WPA2) for the host to use.
+
+    config ESP_MAXIMUM_RETRY
+        int "Maximum retry"
+        default 5
+        help
+            Maximum connection retries before giving up.
+
+    config OTA_SERVER_URL
+        string "OTA firmware URL"
+        default "https://192.168.1.100:8443/firmware.bin"
+        help
+            HTTPS URL of the P4 firmware image to download and flash.
+
+    config OTA_HTTPS_TIMEOUT_MS
+        int "HTTPS timeout (ms)"
+        default 30000
+        range 5000 120000
+        help
+            Connection/SSL handshake timeout for the OTA download.
+
+endmenu

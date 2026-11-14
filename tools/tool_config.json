@@ -1,0 +1,11 @@
+{
+  "language": "zh",
+  "ip": "10.251.210.193",
+  "port": "115200",
+  "p4_project": "D:\\ESP32-IDF\\code\\WIFI_TEST\\p4_wifi\\esp32p4c5_wireless parameter tuning and code download\\p4_host",
+  "c5_prebuilt": "D:\\ESP32-IDF\\code\\WIFI_TEST\\p4_wifi\\esp32p4c5_wireless parameter tuning and code download\\c5_firmware\\prebuilt",
+  "flash_chip": "esp32p4",
+  "flash_baud": "460800",
+  "wifi_ssid": "REDMI Turbo 4",
+  "wifi_password": "11111111"
+}

@@ -1,0 +1,27 @@
+menu "WiFi OTA Helper (无线下载模块)"
+
+    config WIFI_OTA_SSID
+        string "WiFi SSID（路由器名称）"
+        default "REDMI Turbo 4"
+        help
+            要连接的 WiFi 名称。必须是英文（ASCII），不支持中文。
+
+    config WIFI_OTA_PASSWORD
+        string "WiFi Password（密码）"
+        default "11111111"
+        help
+            WiFi 密码。
+
+    config WIFI_OTA_MAX_RETRY
+        int "Maximum WiFi connection retry（最大重连次数）"
+        default 5
+        help
+            WiFi 连接失败时的最大重试次数。
+
+    config WIFI_OTA_TCP_PORT
+        int "OTA TCP port（OTA 命令监听端口）"
+        default 3333
+        help
+            电脑端通过此 TCP 端口发送 "ota <固件URL>" 命令触发无线升级。
+
+endmenu
