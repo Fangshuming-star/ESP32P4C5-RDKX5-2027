@@ -24,6 +24,7 @@
 #include "servo.h"
 #include "qr_reader.h"
 #include "chassis_debug.h"
+#include "wireless.h"
 #include "mission.h"
 
 static const char *TAG = "MAIN";
@@ -1234,6 +1235,7 @@ static void main_task(void *arg)
  *   6. 标定零位。
  *   7. 设置初始坐标。
  *   8. 创建主任务、陀螺仪屏幕任务、底盘调试任务（可选）。
+ *   9. 启动无线调试：后台任务连 Wi-Fi 并监听 TCP 3333（OTA/回显）。
  *
  * 调试：
  *   - 上电电机乱转：先检查 EN 极性和 GPIO 初始化顺序。
@@ -1290,6 +1292,9 @@ void app_main(void)
     if (CHASSIS_DEBUG_ENABLE) {
         chassis_debug_init();
     }
+
+    /* 无线调试：后台连 Wi-Fi，不阻塞上面的实时控制任务 */
+    wireless_start();
 
     /* app_main 不能返回，主循环让出 CPU */
     while (1) {

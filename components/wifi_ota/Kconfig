@@ -1,0 +1,11 @@
+menu "WiFi OTA Helper (无线下载模块)"
+
+    # SSID / 密码 / 重试次数定义在 main/Kconfig.projbuild（键名与图形工具一致）
+
+    config WIFI_OTA_TCP_PORT
+        int "OTA TCP port（OTA 命令监听端口）"
+        default 3333
+        help
+            电脑端通过此 TCP 端口发送 "ota <固件URL>" 命令触发无线升级。
+
+endmenu

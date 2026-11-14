@@ -1,0 +1,37 @@
+# ---- Wireless debug: ESP32-P4 host + on-board ESP32-C5 coprocessor (SDIO) ----
+CONFIG_ESP_HOSTED=y
+CONFIG_ESP_HOSTED_HOST_FEAT_RPC=y
+CONFIG_ESP_HOSTED_HOST_FEAT_RPC_EXT_V2=y
+CONFIG_ESP_HOSTED_HOST_FEAT_SYSTEM=y
+CONFIG_ESP_HOSTED_HOST_FEAT_WIFI=y
+
+# Coprocessor = ESP32-C5, board preset P4X-C5.
+# SDIO pins from preset: CLK=18 CMD=19 D0=14 D1=15 D2=16 D3=17 RST=54
+# (no overlap with chassis/arm/servo/UART pins used by this project)
+CONFIG_SLAVE_IDF_TARGET_ESP32C5=y
+CONFIG_ESP_HOSTED_P4X_C5_DEV_BOARD_FUNC_BOARD=y
+
+# Wi-Fi credentials: key names must match tools/p4_tool.py so the GUI can edit them
+CONFIG_ESP_WIFI_SSID="REDMI Turbo 4"
+CONFIG_ESP_WIFI_PASSWORD="11111111"
+CONFIG_ESP_MAXIMUM_RETRY=5
+CONFIG_WIFI_OTA_TCP_PORT=3333
+
+# 32MB PSRAM on board: keeps the ~417KB A* workspace out of internal RAM,
+# which esp_hosted needs for contiguous DMA buffers (SDIO SW_AGGR).
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_HEX=y
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_SPIRAM_BOOT_INIT=y
+# Without PSRAM just warn instead of panicking (easier field diagnosis)
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+
+# 16MB flash + dual OTA partitions (required for wireless update)
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+

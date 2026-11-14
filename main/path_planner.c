@@ -44,11 +44,22 @@ static uint32_t *s_open_heap = NULL;
 static uint32_t *s_raw_path = NULL;
 
 /* ==================== 三、初始化与障碍物管理区 ==================== */
+
+/* A* 工作区约 417KB：优先放 PSRAM，避免挤占内部 RAM（esp_hosted/Wi-Fi 需要连续 DMA 内存） */
+static void *planner_alloc(size_t size) {
+#if CONFIG_SPIRAM
+    void *p = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (p != NULL) return p;
+    ESP_LOGW(TAG, "PSRAM 分配 %u 字节失败，回退内部 RAM", (unsigned)size);
+#endif
+    return heap_caps_malloc(size, MALLOC_CAP_8BIT);
+}
+
 void path_planner_init(void) {
-    if (s_grid == NULL) s_grid = heap_caps_malloc(NODES, MALLOC_CAP_8BIT);
-    if (s_nodes == NULL) s_nodes = heap_caps_malloc(NODES * sizeof(astar_node_t), MALLOC_CAP_8BIT);
-    if (s_open_heap == NULL) s_open_heap = heap_caps_malloc(NODES * sizeof(uint32_t), MALLOC_CAP_8BIT);
-    if (s_raw_path == NULL) s_raw_path = heap_caps_malloc(NODES * sizeof(uint32_t), MALLOC_CAP_8BIT);
+    if (s_grid == NULL) s_grid = planner_alloc(NODES);
+    if (s_nodes == NULL) s_nodes = planner_alloc(NODES * sizeof(astar_node_t));
+    if (s_open_heap == NULL) s_open_heap = planner_alloc(NODES * sizeof(uint32_t));
+    if (s_raw_path == NULL) s_raw_path = planner_alloc(NODES * sizeof(uint32_t));
     s_dyn_count = 0;
     s_car_length_mm = (float)g_carL;
     s_car_width_mm = (float)g_carW;

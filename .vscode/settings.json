@@ -33,5 +33,5 @@
     "--compile-commands-dir=d:\\ESP32-IDF\\code\\DIpances\\build"
   ],
   "idf.flashType": "UART",
-  "idf.port": "COM4"
+  "idf.port": "COM16"
 }

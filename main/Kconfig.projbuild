@@ -1,0 +1,24 @@
+menu "P4 Host 无线配置"
+
+    # 键名与 tools/p4_tool.py 一致：图形工具会改写 sdkconfig.defaults 里的这两项
+    config ESP_WIFI_SSID
+        string "WiFi SSID（热点名称）"
+        default "myssid"
+        help
+            要连接的热点名称，仅支持 ASCII。
+            图形工具（p4_tool.py）的“WiFi 配置”写入的就是这里的值。
+
+    config ESP_WIFI_PASSWORD
+        string "WiFi Password（密码）"
+        default "mypassword"
+        help
+            WPA/WPA2 密码，至少 8 位。
+
+    config ESP_MAXIMUM_RETRY
+        int "Diagnostic scan interval（每失败多少次扫描一次）"
+        default 5
+        help
+            连接失败时，每隔多少次尝试打印一次附近热点扫描结果，
+            用于排查 SSID 写错 / 热点没开 / 频段不匹配。设为 0 表示不扫描。
+
+endmenu
