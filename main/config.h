@@ -109,7 +109,7 @@
 // 底盘驱动器细分数；必须与驱动器拨码/配置一致，不能按距离误差随意更改。
 #define MOTOR_MICROSTEPS        2
 // 底盘距离标定系数；标定路程偏短时增大，偏长时减小，建议依据实测比例修正。
-#define CHASSIS_DISTANCE_CALIBRATION_FACTOR 1.9274f
+#define CHASSIS_DISTANCE_CALIBRATION_FACTOR 2.0f//原1.9274f
 // 车中心到有效旋转轮组的距离（mm）；影响原地旋转对应的轮子行程，按实测几何尺寸调整。
 #define CENTER_TO_WHEEL_MM      149.164f
 
@@ -154,7 +154,7 @@
 // 底盘速度平滑控制周期（ms）；缩短响应更快但调速更频繁，当前有效范围为 1~10ms。
 #define CHASSIS_SPEED_CONTROL_PERIOD_MS 10
 // 每个速度控制周期的加速步进（Hz）；起步打滑/冲击时减小，起步过慢时增大。
-#define ACCEL_HZ_PER_STEP       2
+#define ACCEL_HZ_PER_STEP       5
 // 每个速度控制周期的减速步进（Hz）；减速不平顺时增大，停车过冲时减小。
 #define DECEL_HZ_PER_STEP       2
 #if CHASSIS_SPEED_CONTROL_PERIOD_MS < 1 || CHASSIS_SPEED_CONTROL_PERIOD_MS > 10
