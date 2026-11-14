@@ -4,9 +4,15 @@ sdkconfig
 sdkconfig.old
 flash_*.bin
 
-# 组件管理器下载的组件
+# Component manager downloads
 managed_components/
 
-# VSCode
+# Python / tools runtime state
+__pycache__/
+*.pyc
+tools/tool_config.json
+
+# VSCode / OS
 .vscode/
 .DS_Store
+Thumbs.db
